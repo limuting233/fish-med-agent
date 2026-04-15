@@ -57,7 +57,17 @@ class Settings(BaseSettings):
         获取异步数据库连接URL
         :return:异步数据库连接URL
         """
+        # postgresql+asyncpg://user:password@host:port/dbname
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    @property
+    def postgres_sync_url(self) -> str:
+        """
+        获取同步数据库连接URL
+        :return:同步数据库连接URL
+        """
+        # postgresql+psycopg://user:password@host:port/dbname
+        return f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
 
 settings = Settings()
