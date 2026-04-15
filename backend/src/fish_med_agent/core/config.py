@@ -45,10 +45,18 @@ class Settings(BaseSettings):
 
     @property
     def api_prefix(self) -> str:
+        """
+        获取API前缀
+        :return:API前缀
+        """
         return f"/api/{self.API_VERSION}"
 
     @property
     def postgres_async_url(self) -> str:
+        """
+        获取异步数据库连接URL
+        :return:异步数据库连接URL
+        """
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
 
