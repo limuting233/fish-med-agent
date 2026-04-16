@@ -101,7 +101,6 @@
 
                     <button class="auth-button" type="submit">登录</button>
                 </form>
-
             </div>
         </section>
     </div>
@@ -316,8 +315,6 @@
     line-height: 1.1;
     letter-spacing: -0.04em;
 }
-
-
 
 .auth-form {
     display: grid;

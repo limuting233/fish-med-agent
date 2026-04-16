@@ -25,6 +25,18 @@ class Settings(BaseSettings):
 
     API_VERSION: str = "v1"
 
+    # PostgreSQL数据库配置
+    POSTGRES_HOST: str
+    POSTGRES_PORT: int
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    ECHO_SQL: bool
+    POOL_SIZE: int
+    MAX_OVERFLOW: int
+    POOL_TIMEOUT: int
+    POOL_RECYCLE: int
+
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
         env_file_encoding="utf-8",
@@ -33,7 +45,29 @@ class Settings(BaseSettings):
 
     @property
     def api_prefix(self) -> str:
+        """
+        获取API前缀
+        :return:API前缀
+        """
         return f"/api/{self.API_VERSION}"
+
+    @property
+    def postgres_async_url(self) -> str:
+        """
+        获取异步数据库连接URL
+        :return:异步数据库连接URL
+        """
+        # postgresql+asyncpg://user:password@host:port/dbname
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    @property
+    def postgres_sync_url(self) -> str:
+        """
+        获取同步数据库连接URL
+        :return:同步数据库连接URL
+        """
+        # postgresql+psycopg://user:password@host:port/dbname
+        return f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
 
 settings = Settings()
