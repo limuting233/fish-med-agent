@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from fish_med_agent.api.v1.router import api_v1_router
 from fish_med_agent.core.config import settings
+from fish_med_agent.core.logging import configure_logging
 from fish_med_agent.core.middleware import RequestIdMiddleware
 
 
@@ -12,6 +13,8 @@ def create_app():
         FastAPI应用对象
 
     """
+    configure_logging()  # 配置日志
+
     app = FastAPI(
         title="Fish Med Agent Service",
         version=settings.SERVICE_VERSION,
