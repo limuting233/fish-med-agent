@@ -74,8 +74,16 @@ def _configure_standard_logging(level: str, logger_names: tuple[str, ...]) -> No
     for logger_name in _iter_logger_names(logger_names):
         std_logger = logging.getLogger(logger_name)
         std_logger.handlers.clear()
-        std_logger.setLevel(level)
+        std_logger.setLevel(_standard_logger_level(logger_name, level))
         std_logger.propagate = True
+
+
+def _standard_logger_level(logger_name: str, default_level: str) -> str:
+    if logger_name.startswith("sqlalchemy.engine"):
+        return "INFO" if settings.ECHO_SQL else "WARNING"
+    if logger_name.startswith("sqlalchemy"):
+        return "WARNING"
+    return default_level
 
 
 def _iter_logger_names(logger_names: tuple[str, ...]) -> set[str]:
