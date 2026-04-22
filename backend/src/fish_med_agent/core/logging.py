@@ -14,7 +14,7 @@ DEFAULT_LOG_FORMAT = (
     "request_id={extra[request_id]} | "
     "<cyan>{extra[source_name]}</cyan>:<cyan>{extra[source_function]}</cyan>:"
     "<cyan>{extra[source_line]}</cyan> - "
-    "<level>{message}</level>\n{exception}"
+    "<level>{message}</level>{exception}"
 )
 
 STANDARD_LOGGER_NAMES = (
@@ -27,7 +27,7 @@ STANDARD_LOGGER_NAMES = (
     "alembic",
 )
 
-_request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+_request_id_ctx: ContextVar[str] = ContextVar("request_id", default="system")
 _configured = False
 
 
@@ -181,5 +181,4 @@ def get_request_id() -> str:
     return _request_id_ctx.get()
 
 
-configure_logging()
 logger = get_logger()

@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     API_VERSION: str = "v1"
 
+    # 日志配置
+    LOG_LEVEL: str
+    LOG_JSON: bool
+
     # PostgreSQL数据库配置
     POSTGRES_HOST: str
     POSTGRES_PORT: int
