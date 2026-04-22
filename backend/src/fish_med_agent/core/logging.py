@@ -1,11 +1,12 @@
 import logging
-import os
 import sys
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
 from loguru import logger as _logger
+
+from fish_med_agent.core.config import settings
 
 DEFAULT_LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -107,9 +108,9 @@ def configure_logging(
     """
     global _configured
 
-    log_level = (level or os.getenv("LOG_LEVEL") or "INFO").upper()
-    serialize = _to_bool(json_logs, _to_bool(os.getenv("LOG_JSON")))
-    diagnose = os.getenv("ENV", "dev") != "prod"
+    log_level = (level or settings.LOG_LEVEL or "INFO").upper()
+    serialize = _to_bool(json_logs, _to_bool(settings.LOG_JSON))
+    diagnose = settings.ENV != "prod"
 
     _logger.remove()
     _logger.configure(patcher=_patch_record)
