@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     POOL_TIMEOUT: int
     POOL_RECYCLE: int
 
+    # CloseAI配置
+    CLOSEAI_BASE_URL: str
+    CLOSEAI_API_KEY: str
+    CLOSEAI_MODEL: str
+    CLOSEAI_TEMPERATURE: float
+    CLOSEAI_TIMEOUT: float
+
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
         env_file_encoding="utf-8",
