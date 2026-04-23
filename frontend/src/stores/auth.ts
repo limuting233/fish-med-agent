@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 export const useAuthStore = defineStore('auth', () => {
-    const accessToken = ref('')
+    // const accessToken = ref('')
+    const accessToken = ref('mock_access_token')
 
     const isAuthenticated = computed(() => {
         return accessToken.value.length > 0
@@ -24,7 +25,6 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     return {
-       
         isAuthenticated,
         setAccessToken,
         clearAccessToken,
