@@ -1068,10 +1068,15 @@ textarea:focus-visible {
 }
 
 .header-icon-button:hover,
-.mobile-menu-button:hover,
-.composer-icon-button:hover {
+.mobile-menu-button:hover {
   background: var(--accent);
   color: var(--accent-foreground);
+}
+
+.composer-icon-button:hover,
+.composer-icon-button:focus-visible {
+  background: rgba(14, 127, 176, 0.1);
+  color: var(--ocean-blue);
 }
 
 .header-icon-button:active,
@@ -1079,6 +1084,11 @@ textarea:focus-visible {
 .composer-icon-button:active,
 .send-button:active {
   transform: scale(0.96);
+}
+
+.composer-icon-button:active {
+  background: rgba(14, 127, 176, 0.16);
+  color: var(--ocean-blue-hover);
 }
 
 .message-pane {
