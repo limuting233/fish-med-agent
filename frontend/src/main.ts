@@ -1,8 +1,9 @@
 import { createApp } from 'vue'
 import App from './App.vue'
+import { createPinia } from 'pinia'
 import router from './router'
 
-
 const app = createApp(App)
-app.use(router)
+app.use(router)  //  路由
+app.use(createPinia())  //  状态管理
 app.mount('#app')
