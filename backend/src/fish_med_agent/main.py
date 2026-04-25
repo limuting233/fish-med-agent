@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from fish_med_agent.api.v1.router import api_v1_router
 from fish_med_agent.core.config import settings
+from fish_med_agent.core.handlers import register_exception_handlers
 from fish_med_agent.core.logging import configure_logging
 from fish_med_agent.core.middleware import RequestIdMiddleware
 
@@ -29,6 +30,7 @@ def create_app():
         allow_headers=["*"],
     )
     app.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(app)
     app.include_router(api_v1_router, prefix=settings.api_prefix)
 
     return app
