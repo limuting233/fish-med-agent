@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from fish_med_agent.api.v1.router import api_v1_router
 from fish_med_agent.core.config import settings
@@ -20,6 +21,13 @@ def create_app():
         version=settings.SERVICE_VERSION,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(RequestIdMiddleware)
     app.include_router(api_v1_router, prefix=settings.api_prefix)
 
