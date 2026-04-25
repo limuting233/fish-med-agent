@@ -56,3 +56,27 @@ class ConversationRepo:
         await self._db.flush()
         await self._db.refresh(conversation)
         return conversation
+
+    async def list(self, user_id: int) -> list[Conversation]:
+        """
+        获取用户的所有对话
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            对话列表
+        """
+        stmt = (
+            select(Conversation)
+            .where(
+                Conversation.user_id == user_id,
+                Conversation.deleted_at.is_(None),
+            )
+            .order_by(
+                Conversation.metadata_["last_message_at"]
+                .as_string()
+                .desc()
+            )
+        )
+        res = await self._db.execute(stmt)
+        return res.scalars().all()

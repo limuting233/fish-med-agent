@@ -57,9 +57,7 @@ class ChatService:
                 title=message.content[:10],
                 user_id=current_user_id,
                 messages=[],
-                metadata_={
-                    "conversation_created_at": now,
-                },
+                metadata_={},
             )
             exist_conversation = await self._conversation_repo.add(new_conversation)
 
@@ -97,7 +95,7 @@ class ChatService:
             # 成功后保存 user + assistant 消息，更新 last_message_at，commit 到数据库
             now = datetime.now(timezone.utc).isoformat()
             messages.append({"role": "assistant", "content": assistant_content, "created": now})
-            exist_conversation.metadata_["last_message_at"] = now
+            exist_conversation.metadata_ = {"last_message_at": now}
             exist_conversation.messages = messages
             await self._conversation_repo.update(exist_conversation)
             await self._db.commit()

@@ -1,4 +1,3 @@
-
 from typing import Any
 
 from sqlalchemy import String, BIGINT
@@ -16,3 +15,6 @@ class Conversation(Base):
     summary: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None, comment="会话摘要")
     messages: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True, comment="回话记录")
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True, comment="会话元数据")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
