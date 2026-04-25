@@ -50,7 +50,7 @@ export class RequestError<T = unknown> extends Error {
 }
 
 const DEFAULT_BASE_URL = '/api/v1'  // 默认基础URL
-const DEFAULT_TIMEOUT = 10 * 60 * 1000  // 10分钟超时
+const DEFAULT_TIMEOUT = 30 * 1000  // 30秒超时
 
 
 // 获取基础URL
