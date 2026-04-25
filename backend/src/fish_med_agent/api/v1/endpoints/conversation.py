@@ -23,6 +23,7 @@ async def list(
     """
     获取用户的所有对话
     Args:
+        http_request: HTTP请求对象, 用于获取请求状态, 从依赖项中获取
         db: 数据库会话, 用于执行数据库操作, 从依赖项中获取
         current_user_id: 当前用户ID, 从依赖项中获取
 
