@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     CLOSEAI_TEMPERATURE: float
     CLOSEAI_TIMEOUT: float
 
+    # JWT配置
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    REFRESH_TOKEN_EXPIRE_DAYS: int
+
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
         env_file_encoding="utf-8",
