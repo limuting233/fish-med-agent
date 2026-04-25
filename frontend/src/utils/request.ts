@@ -27,7 +27,7 @@ export type UploadOptions = Omit<RequestOptions, 'method' | 'body'> & {
 
 export class RequestError<T = unknown> extends Error {
     status: number
-    code?: number | string
+    code?: number
     requestId?: string
     data?: T
 
@@ -35,7 +35,7 @@ export class RequestError<T = unknown> extends Error {
         message: string,
         options: {
             status: number
-            code?: number | string
+            code?: number
             requestId?: string
             data?: T
         },
