@@ -72,8 +72,7 @@ class ChatService:
             yield self._sse(event="start", data={})
             resp_stream = await self._async_client.chat.completions.create(
                 model=settings.CLOSEAI_MODEL,
-                messages=[{"role": "system", "content": _SYSTEM_PROMPT}] +
-                         [{"role": msg["role"], "content": msg["content"]} for msg in messages],
+                messages=[{"role": "system", "content": _SYSTEM_PROMPT}] + [{"role": msg["role"], "content": msg["content"]} for msg in messages],
                 temperature=settings.CLOSEAI_TEMPERATURE,
                 stream=True,
             )
