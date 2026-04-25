@@ -25,10 +25,12 @@ const searchQuery = ref('')
 const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref('')
+const responseGenerating = ref(false)
 let activeStream: {
     session: StreamSession
     conversationId: number
     assistantMessageIndex: number
+    token: string
 } | null = null
 
 const conversations = ref<Conversation[]>([])
@@ -64,7 +66,7 @@ const activeMessages = computed(() => activeConversation.value?.messages ?? [])
 
 // 是否可以发送消息，有文本的情况下才允许发送
 const canSend = computed(() => {
-    return draftMessage.value.trim().length > 0
+    return draftMessage.value.trim().length > 0 && !responseGenerating.value
 })
 
 const searchResults = computed(() => {
@@ -359,14 +361,13 @@ function abortActiveStream(fallbackText?: string) {
     finalizeAssistantMessage(conversationId, assistantMessageIndex, fallbackText)
     session.abort()
     activeStream = null
+    responseGenerating.value = false
 }
 
 function sendMessage() {
     if (!canSend.value) {
         return
     }
-
-    abortActiveStream('已停止生成。')
 
     const existingConversation = conversations.value.find((conversation) => conversation.id === selectedConversationId.value)
     const activeConversationItem = existingConversation ?? createPendingConversation()
@@ -381,6 +382,7 @@ function sendMessage() {
     const now = new Date()
     const nowIso = now.toISOString()
     const assistantMessageIndex = currentMessages.length + 1
+    const streamToken = createId('stream')
 
     updateConversationState(activeId, (conversation) => ({
         ...conversation,
@@ -419,7 +421,7 @@ function sendMessage() {
         },
         {
             onMessageDelta(delta) {
-                if (activeStream?.assistantMessageIndex !== assistantMessageIndex) {
+                if (activeStream?.token !== streamToken) {
                     return
                 }
 
@@ -439,7 +441,7 @@ function sendMessage() {
                 scrollToBottom()
             },
             onClose() {
-                if (activeStream?.assistantMessageIndex !== assistantMessageIndex) {
+                if (activeStream?.token !== streamToken) {
                     return
                 }
 
@@ -454,13 +456,14 @@ function sendMessage() {
                     updated_at: nowIso,
                 }))
 
-                if (activeStream?.assistantMessageIndex === assistantMessageIndex) {
+                if (activeStream?.token === streamToken) {
                     activeStream = null
                 }
+                responseGenerating.value = false
                 scrollToBottom()
             },
             onError(error) {
-                if (activeStream?.assistantMessageIndex !== assistantMessageIndex) {
+                if (activeStream?.token !== streamToken) {
                     return
                 }
 
@@ -475,9 +478,10 @@ function sendMessage() {
                     updated_at: nowIso,
                 }))
 
-                if (activeStream?.assistantMessageIndex === assistantMessageIndex) {
+                if (activeStream?.token === streamToken) {
                     activeStream = null
                 }
+                responseGenerating.value = false
             },
         },
         {
@@ -489,9 +493,18 @@ function sendMessage() {
         session,
         conversationId: activeId,
         assistantMessageIndex,
+        token: streamToken,
     }
+    responseGenerating.value = true
 
-    void session.completed.catch(() => undefined)
+    void session.completed
+        .catch(() => undefined)
+        .finally(() => {
+            if (activeStream?.token === streamToken) {
+                activeStream = null
+            }
+            responseGenerating.value = false
+        })
 }
 
 function formatFileSize(size: number) {
