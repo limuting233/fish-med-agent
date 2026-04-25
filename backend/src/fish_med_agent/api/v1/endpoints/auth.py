@@ -1,11 +1,9 @@
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fish_med_agent.api.deps import get_db
 from fish_med_agent.core.logging import get_logger
-from fish_med_agent.schemas.auth import LoginRequest
+from fish_med_agent.schemas.auth import LoginRequest, TokenResponse
 from fish_med_agent.schemas.response import ApiResponse, success_response
 from fish_med_agent.service.auth_service import AuthService
 
@@ -14,7 +12,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-@router.post("/login", response_model=ApiResponse[dict[str, str]])
+@router.post("/login", response_model=ApiResponse[TokenResponse])
 async def login(
         http_request: Request,
         login_request: LoginRequest,
@@ -33,7 +31,7 @@ async def login(
     auth_service = AuthService(db)
     request_id = getattr(http_request.state, "request_id")
     token_dict = await auth_service.login(login_request.username, login_request.password)
-    return success_response[dict[str, Any]](
+    return success_response(
         request_id=request_id,
         data=token_dict,
     )
