@@ -11,6 +11,6 @@ export type LoginResponse = {
     expires_in: number
 }
 
-export function loginRequest(payload: LoginRequest) {
+export function loginRequest(payload: LoginRequest): Promise<LoginResponse> {
     return http.post<LoginResponse>('/auth/login', payload)
 }
