@@ -31,7 +31,7 @@ class AuthService:
         access_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         refresh_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 
-        token_dict={
+        token_dict = {
             "access_token": create_token(
                 user_id=exist_user.id,
                 token_type="access",
@@ -43,6 +43,6 @@ class AuthService:
                 expires_delta=refresh_expires,
             ),
             "token_type": "Bearer",
-            "expires_in": int(access_expires.total_seconds()),
+            "expires_at": int((datetime.now(timezone.utc) + access_expires).timestamp() * 1000),
         }
         return token_dict
