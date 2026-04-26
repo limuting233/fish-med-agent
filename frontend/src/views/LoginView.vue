@@ -21,9 +21,9 @@ const isLogining = ref(false) // 登录状态标志位
 const login = async () => {
     // 设置登录状态标志位为 true
     isLogining.value = true
-    // 验证用户名和密码
+    // 验证用户名和密码是否为空
     if (!username.value || !password.value) {
-        toast.warning('请输入用户名和密码')
+        toast.warning('用户名和密码不能为空')
         // 设置登录状态标志位为 false
         isLogining.value = false
         return
@@ -46,6 +46,8 @@ const login = async () => {
         // 登录成功，将access token 保存到store
         authStore.setAccessToken(data.access_token, data.expires_at)
 
+
+
         // 登录成功后，跳转到上一个路由或默认路由
         if (typeof route.query.redirect === 'string' && route.query.redirect !== '') {
             router.replace(route.query.redirect)
@@ -62,6 +64,7 @@ const login = async () => {
         isLogining.value = false
     }
 }
+
 </script>
 
 <template>
