@@ -13,6 +13,8 @@ const router = useRouter() // 获取路由实例
 const username = ref('') // 用户名
 const password = ref('') // 密码
 
+const rememberMe = ref(false) // 记住密码标志位
+
 const isLogining = ref(false) // 登录状态标志位
 
 // 登录按钮点击事件处理
@@ -153,7 +155,7 @@ const login = async () => {
 
                     <div class="auth-form__meta">
                         <label class="checkbox">
-                            <input class="checkbox__input" type="checkbox" />
+                            <input class="checkbox__input" type="checkbox" v-model="rememberMe" />
                             <span class="checkbox__box"></span>
                             <span class="checkbox__label">记住我</span>
                         </label>
