@@ -7,7 +7,6 @@ from fish_med_agent.core.exception import UsernameOrPasswordError
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.core.security import verify_password, create_token
 from fish_med_agent.repositories.user_repo import UserRepo
-from fish_med_agent.schemas.auth import TokenResponse
 
 logger = get_logger(__name__)
 
@@ -32,17 +31,18 @@ class AuthService:
         access_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         refresh_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 
-        data = TokenResponse(
-            access_token=create_token(
+        token_dict={
+            "access_token": create_token(
                 user_id=exist_user.id,
                 token_type="access",
                 expires_delta=access_expires,
             ),
-            refresh_token=create_token(
+            "refresh_token": create_token(
                 user_id=exist_user.id,
                 token_type="refresh",
                 expires_delta=refresh_expires,
             ),
-            expires_in=int(access_expires.total_seconds()),
-        )
-        return data.model_dump()
+            "token_type": "Bearer",
+            "expires_in": int(access_expires.total_seconds()),
+        }
+        return token_dict
