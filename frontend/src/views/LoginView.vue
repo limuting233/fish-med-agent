@@ -1,4 +1,66 @@
-<script lang="ts" setup></script>
+<script lang="ts" setup>
+import { ref } from 'vue'
+import { toast } from 'vue-sonner'
+import { loginRequest } from '@/api/auth'
+import { useAuthStore } from '@/stores/auth'
+import { useRouter, useRoute } from 'vue-router'
+
+const authStore = useAuthStore()
+
+const route = useRoute() // 获取当前路由信息
+const router = useRouter() // 获取路由实例
+
+const username = ref('') // 用户名
+const password = ref('') // 密码
+
+const isLogining = ref(false) // 登录状态标志位
+
+// 登录按钮点击事件处理
+const login = async () => {
+    // 设置登录状态标志位为 true
+    isLogining.value = true
+    // 验证用户名和密码
+    if (!username.value || !password.value) {
+        toast.warning('请输入用户名和密码')
+        // 设置登录状态标志位为 false
+        isLogining.value = false
+        return
+    }
+    // 验证用户名和密码的格式是否规范，这里先不做验证，后续再根据需求添加验证逻辑。
+
+    // 调用登录接口
+    try {
+        const { code, message, data } = await loginRequest({
+            username: username.value,
+            password: password.value,
+        })
+        if (code !== 200) {
+            toast.error(message || '登录失败，请稍后重试')
+            // 设置登录状态标志位为 false
+            isLogining.value = false
+            return
+        }
+
+        // 登录成功，将access token 保存到store
+        authStore.setAccessToken(data.access_token, data.expires_at)
+
+        // 登录成功后，跳转到上一个路由或默认路由
+        if (typeof route.query.redirect === 'string' && route.query.redirect !== '') {
+            router.replace(route.query.redirect)
+        } else {
+            router.replace('/home')
+        }
+    } catch (err) {
+        console.error('登录失败:', err)
+        toast.error('登录失败，请稍后重试')
+    } finally {
+        // 登录完成后，将登录状态标志位设置为 false, 并清空用户名和密码
+        username.value = ''
+        password.value = ''
+        isLogining.value = false
+    }
+}
+</script>
 
 <template>
     <div class="login-page">
@@ -78,15 +140,15 @@
                     <h2 class="auth-card__title">欢迎回来</h2>
                 </div>
 
-                <form class="auth-form" @submit.prevent>
+                <form class="auth-form" @submit.prevent="login">
                     <label class="field">
-                        <span class="field__label">用户名或邮箱</span>
-                        <input class="field__input" type="text" placeholder="请输入用户名或邮箱" />
+                        <span class="field__label">用户名</span>
+                        <input class="field__input" v-model="username" type="text" placeholder="请输入用户名" />
                     </label>
 
                     <label class="field">
                         <span class="field__label">密码</span>
-                        <input class="field__input" type="password" placeholder="请输入密码" />
+                        <input class="field__input" v-model="password" type="password" placeholder="请输入密码" />
                     </label>
 
                     <div class="auth-form__meta">
