@@ -28,8 +28,8 @@ class UsernameOrPasswordError(BizException):
     用户名或密码错误。
     """
 
-    status_code = HTTPStatus.UNAUTHORIZED
-    code = 401001
+    status_code = HTTPStatus.OK
+    code = 100001
     message = "用户名或密码错误"
 
 
