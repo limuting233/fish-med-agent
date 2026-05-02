@@ -26,9 +26,9 @@ class ChatService:
     def __init__(self, db: AsyncSession):
         self._db = db
         self._async_client = AsyncOpenAI(
-            api_key=settings.CLOSEAI_API_KEY,
-            base_url=settings.CLOSEAI_BASE_URL,
-            timeout=settings.CLOSEAI_TIMEOUT,
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            timeout=settings.DEEPSEEK_TIMEOUT,
         )
         self._conversation_repo = ConversationRepo(db)
 
@@ -71,9 +71,10 @@ class ChatService:
         try:
             yield self._sse(event="start", data={})
             resp_stream = await self._async_client.chat.completions.create(
-                model=settings.CLOSEAI_MODEL,
+                model=settings.DEEPSEEK_MODEL,
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT}] + [{"role": msg["role"], "content": msg["content"]} for msg in messages],
-                temperature=settings.CLOSEAI_TEMPERATURE,
+                temperature=settings.DEEPSEEK_TEMPERATURE,
+                extra_body={"thinking": {"type": "disabled"}},
                 stream=True,
             )
 

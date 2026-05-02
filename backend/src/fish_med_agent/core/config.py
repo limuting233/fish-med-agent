@@ -41,12 +41,12 @@ class Settings(BaseSettings):
     POOL_TIMEOUT: int
     POOL_RECYCLE: int
 
-    # CloseAI配置
-    CLOSEAI_BASE_URL: str
-    CLOSEAI_API_KEY: str
-    CLOSEAI_MODEL: str
-    CLOSEAI_TEMPERATURE: float
-    CLOSEAI_TIMEOUT: float
+    # Deepseek配置
+    DEEPSEEK_BASE_URL: str
+    DEEPSEEK_API_KEY: str
+    DEEPSEEK_MODEL: str
+    DEEPSEEK_TEMPERATURE: float
+    DEEPSEEK_TIMEOUT: float
 
     # JWT配置
     JWT_SECRET_KEY: str
