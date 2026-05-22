@@ -1,5 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from fish_med_agent.models import User
 
@@ -24,6 +25,7 @@ class UserRepo:
                 User.is_active == True,
                 User.deleted_at.is_(None),
             )
+            .options(defer(User.password, raiseload=True))
         )
         res = await self._db.execute(stmt)
         return res.scalar_one_or_none()
