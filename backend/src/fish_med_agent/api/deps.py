@@ -55,7 +55,7 @@ def get_current_user_id(
         raise InvalidTokenError()
 
     # 只接受 access token, 防止用 refresh token 直接访问业务接口
-    if payload.get("type") != "access_token":
+    if payload.get("type") != "access":
         logger.debug(f"unexpected token type: {payload.get('type')}")
         raise InvalidTokenError()
 
