@@ -44,7 +44,7 @@ const login = async () => {
         }
 
         // 登录成功，将access token 保存到store
-        authStore.setAccessToken(data.access_token, data.expires_at)
+        authStore.setAccessToken(data.access_token, data.expires_at, username.value)
 
 
 

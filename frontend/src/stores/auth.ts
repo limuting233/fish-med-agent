@@ -4,6 +4,10 @@ import { computed, ref, watch } from 'vue'
 export const useAuthStore = defineStore('auth', () => {
     const accessToken = ref('')
     const expiresAt = ref(0)
+    const username = ref('')
+    const nickname = ref('')
+    const avatarUrl = ref('')
+    const isActive = ref(true)
     let expiresTimer: ReturnType<typeof window.setTimeout> | undefined
 
     // 计算accessToken是否过期
@@ -42,9 +46,20 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     // 设置accessToken
-    const setAccessToken = (token: string, tokenExpiresAt: number) => {
+    const setAccessToken = (token: string, tokenExpiresAt: number, accountUsername = '', accountNickname = '', accountAvatarUrl = '', accountIsActive = true) => {
         accessToken.value = token
         expiresAt.value = tokenExpiresAt
+        username.value = accountUsername
+        nickname.value = accountNickname
+        avatarUrl.value = accountAvatarUrl
+        isActive.value = accountIsActive
+    }
+
+    const setUserProfile = (profile: { username?: string | null; nickname?: string | null; avatarUrl?: string | null; isActive?: boolean | null }) => {
+        username.value = profile.username ?? username.value
+        nickname.value = profile.nickname ?? nickname.value
+        avatarUrl.value = profile.avatarUrl ?? avatarUrl.value
+        isActive.value = profile.isActive ?? isActive.value
     }
 
     // 清除accessToken
@@ -52,6 +67,10 @@ export const useAuthStore = defineStore('auth', () => {
         clearExpiresTimer()
         accessToken.value = ''
         expiresAt.value = 0
+        username.value = ''
+        nickname.value = ''
+        avatarUrl.value = ''
+        isActive.value = true
     }
 
     // 获取accessToken
@@ -69,7 +88,12 @@ export const useAuthStore = defineStore('auth', () => {
     return {
         isAccessTokenExpired,
         isAuthenticated,
+        username,
+        nickname,
+        avatarUrl,
+        isActive,
         setAccessToken,
+        setUserProfile,
         clearAccessToken,
         getAccessToken,
     }

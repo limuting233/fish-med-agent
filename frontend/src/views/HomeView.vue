@@ -1,7 +1,9 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Clock, FileImage, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { getCurrentUserRequest } from '@/api/auth'
 import { fetchConversationList, type Conversation, type ConversationMessage } from '@/api/conversation'
+import { useAuthStore } from '@/stores/auth'
 import { streamChat, type StreamSession } from '@/utils/stream'
 
 type ConversationGroup = 'today' | 'week' | 'earlier'
@@ -15,6 +17,7 @@ type Attachment = {
 }
 
 const sidebarOpen = ref(false)
+const authStore = useAuthStore()
 const selectedConversationId = ref<number>(0)
 const draftMessage = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -82,6 +85,22 @@ const searchResults = computed(() => {
 })
 
 const hasConversations = computed(() => conversations.value.length > 0)
+const userNickname = computed(() => authStore.nickname || authStore.username || '鱼病问诊用户')
+const userUsername = computed(() => (authStore.username ? `@${authStore.username}` : '@fish-med-user'))
+const userInitial = computed(() => Array.from(userNickname.value.trim() || authStore.username.trim() || 'F')[0]?.toUpperCase() ?? 'F')
+
+async function loadCurrentUser() {
+    try {
+        const user = await getCurrentUserRequest()
+        authStore.setUserProfile({
+            username: user.username,
+            nickname: user.nickname,
+            isActive: user.is_active,
+        })
+    } catch {
+        // The sidebar keeps the login username fallback if profile loading is unavailable.
+    }
+}
 
 async function loadConversationList() {
     conversationListLoading.value = true
@@ -532,6 +551,7 @@ watch(
 )
 
 onMounted(() => {
+    void loadCurrentUser()
     void loadConversationList()
 })
 
@@ -626,6 +646,18 @@ onBeforeUnmount(() => {
                     </section>
                 </template>
             </nav>
+
+            <section class="sidebar-user-panel" aria-label="当前用户">
+                <div class="sidebar-user-panel__avatar" aria-hidden="true">
+                    <img v-if="authStore.avatarUrl" :src="authStore.avatarUrl" alt="" />
+                    <span v-else>{{ userInitial }}</span>
+                </div>
+
+                <div class="sidebar-user-panel__identity">
+                    <strong>{{ userNickname }}</strong>
+                    <span>{{ userUsername }}</span>
+                </div>
+            </section>
         </aside>
 
         <main class="chat-workspace">
@@ -1196,6 +1228,66 @@ textarea:focus-visible {
 }
 
 .conversation-item__summary {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.2;
+}
+
+.sidebar-user-panel {
+    display: flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+    border-top: 1px solid var(--border);
+    background: transparent;
+    padding: 12px 8px 2px;
+}
+
+.sidebar-user-panel__avatar {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid rgba(14, 127, 176, 0.18);
+    border-radius: 50%;
+    background: var(--ocean-blue-soft);
+    color: var(--ocean-blue);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+}
+
+.sidebar-user-panel__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.sidebar-user-panel__identity {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.sidebar-user-panel__identity strong,
+.sidebar-user-panel__identity span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-user-panel__identity strong {
+    color: var(--foreground);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.sidebar-user-panel__identity span {
     color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.2;

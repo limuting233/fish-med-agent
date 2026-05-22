@@ -14,6 +14,19 @@ export type LoginData = {
     expires_at: number  // 过期时间的毫秒级时间戳
 }
 
+export type UserInfo = {
+    id: number
+    username: string
+    nickname: string | null
+    email: string | null
+    phone: string | null
+    is_active: boolean
+    last_login_at: string | null
+    created_at: string
+    updated_at: string
+    deleted_at: string | null
+}
+
 // complete login response json
 export type LoginResponse = ApiResponse<LoginData>
 
@@ -23,4 +36,8 @@ export function loginRequest(payload: LoginRequest): Promise<LoginResponse> {
         skipAuth: true,
         rawResponse: true,
     })
+}
+
+export function getCurrentUserRequest(): Promise<UserInfo> {
+    return http.get<UserInfo>('/auth/me')
 }
