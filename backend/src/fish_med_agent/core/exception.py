@@ -41,3 +41,13 @@ class InvalidTokenError(BizException):
     status_code = HTTPStatus.UNAUTHORIZED
     code = 401002
     message = "无效 token"
+
+
+class UserNotFoundError(BizException):
+    """
+    用户不存在。
+    """
+
+    status_code = HTTPStatus.NOT_FOUND
+    code = 404001
+    message = "用户不存在"

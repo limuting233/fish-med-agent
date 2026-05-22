@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fish_med_agent.api.deps import get_db
+from fish_med_agent.api.deps import get_db, get_current_user_id
 from fish_med_agent.core.config import settings
 from fish_med_agent.core.logging import get_logger
-from fish_med_agent.schemas.auth import LoginRequest
+from fish_med_agent.schemas.auth import LoginRequest, UserInfoResponse
 from fish_med_agent.schemas.response import ApiResponse, success_response
 from fish_med_agent.service.auth_service import AuthService
 
@@ -49,6 +49,33 @@ async def login(
     return success_response(
         request_id=request_id,
         data=token_dict,
+    )
+
+
+
+
+@router.get("/me", response_model=ApiResponse[UserInfoResponse])
+async def get_me(
+        http_request: Request,
+        db: AsyncSession = Depends(get_db),
+        current_user_id: int = Depends(get_current_user_id),
+):
+    """
+    获取当前登录用户的信息
+    Args:
+        http_request: HTTP请求对象, 用于获取请求状态
+        db: 异步数据库会话, 从依赖项中获取
+        current_user_id: 当前用户ID, 从依赖项中获取
+
+    Returns:
+        当前用户信息
+    """
+    request_id = getattr(http_request.state, "request_id")
+    auth_service = AuthService(db)
+    user = await auth_service.get_by_id(current_user_id)
+    return success_response(
+        request_id=request_id,
+        data=UserInfoResponse.model_validate(user),
     )
 
 

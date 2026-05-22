@@ -3,9 +3,10 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fish_med_agent.core.config import settings
-from fish_med_agent.core.exception import UsernameOrPasswordError
+from fish_med_agent.core.exception import UsernameOrPasswordError, UserNotFoundError
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.core.security import verify_password, create_token
+from fish_med_agent.models import User
 from fish_med_agent.repositories.user_repo import UserRepo
 
 logger = get_logger(__name__)
@@ -42,7 +43,22 @@ class AuthService:
                 token_type="refresh",
                 expires_delta=refresh_expires,
             ),
-            "token_type": "Bearer",
+            "token_type": "bearer",
             "expires_at": int((datetime.now(timezone.utc) + access_expires).timestamp() * 1000),
         }
         return token_dict
+
+    async def get_by_id(self, user_id: int) -> User:
+        """
+        根据用户ID获取用户信息
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            User: 用户对象
+        """
+        user = await self._user_repo.get_by_id(user_id)
+        if not user:
+            logger.warning(f"user_id={user_id} not found or inactive")
+            raise UserNotFoundError()
+        return user

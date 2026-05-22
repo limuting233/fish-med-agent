@@ -8,6 +8,26 @@ class UserRepo:
     def __init__(self, db: AsyncSession):
         self._db = db
 
+    async def get_by_id(self, user_id: int) -> User | None:
+        """
+        根据用户ID获取用户
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            User | None: 用户对象, 如果用户存在则返回用户对象, 否则返回None
+        """
+        stmt = (
+            select(User)
+            .where(
+                User.id == user_id,
+                User.is_active == True,
+                User.deleted_at.is_(None),
+            )
+        )
+        res = await self._db.execute(stmt)
+        return res.scalar_one_or_none()
+
     async def get_by_username(self, username: str) -> User | None:
         """
         根据用户名获取用户
