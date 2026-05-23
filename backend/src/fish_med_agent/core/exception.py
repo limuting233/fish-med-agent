@@ -33,14 +33,24 @@ class UsernameOrPasswordError(BizException):
     message = "用户名或密码错误"
 
 
-class InvalidTokenError(BizException):
+class InvalidAccessTokenError(BizException):
     """
-    Token 无效或已过期。
+    Access Token 无效或已过期。
     """
 
     status_code = HTTPStatus.UNAUTHORIZED
     code = 401002
-    message = "无效 token"
+    message = "access token 无效"
+
+
+class InvalidRefreshTokenError(BizException):
+    """
+    Refresh Token 无效或已过期。
+    """
+
+    status_code = HTTPStatus.UNAUTHORIZED
+    code = 401003
+    message = "refresh token 无效"
 
 
 class UserNotFoundError(BizException):

@@ -5,7 +5,7 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fish_med_agent.core.exception import InvalidTokenError
+from fish_med_agent.core.exception import InvalidAccessTokenError
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.core.security import decode_token
 from fish_med_agent.db.session import AsyncSessionLocal
@@ -43,32 +43,32 @@ def get_current_user_id(
 
     if not credentials or credentials.scheme.lower() != "bearer":
         logger.debug("Authorization header missing or not Bearer scheme")
-        raise InvalidTokenError()
+        raise InvalidAccessTokenError()
 
     try:
         payload = decode_token(credentials.credentials)
     except jwt.ExpiredSignatureError:
         logger.debug("access token expired")
-        raise InvalidTokenError(message="token 已过期")
+        raise InvalidAccessTokenError()
     except jwt.PyJWTError as e:
         logger.debug(f"decode access token failed: {e}")
-        raise InvalidTokenError()
+        raise InvalidAccessTokenError()
 
     # 只接受 access token, 防止用 refresh token 直接访问业务接口
     if payload.get("type") != "access":
         logger.debug(f"unexpected token type: {payload.get('type')}")
-        raise InvalidTokenError()
+        raise InvalidAccessTokenError()
 
     sub = payload.get("sub")
 
     if not sub:
-        raise InvalidTokenError()
+        raise InvalidAccessTokenError()
 
     try:
         return int(sub)
     except (TypeError, ValueError):
         logger.warning(f"invalid sub in token: {sub!r}")
-        raise InvalidTokenError()
+        raise InvalidAccessTokenError()
 
 
 
