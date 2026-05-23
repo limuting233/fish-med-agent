@@ -1,7 +1,8 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Clock, FileImage, LogOut, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
+import { useRouter } from 'vue-router'
 import { getCurrentUserRequest } from '@/api/auth'
 import { fetchConversationList, type Conversation, type ConversationMessage } from '@/api/conversation'
 import { useAuthStore } from '@/stores/auth'
@@ -19,6 +20,7 @@ type Attachment = {
 
 const sidebarOpen = ref(false)
 const authStore = useAuthStore()
+const router = useRouter()
 const selectedConversationId = ref<number>(0)
 const draftMessage = ref('')
 const messageInputComposing = ref(false)
@@ -26,6 +28,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const messagePane = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<Attachment[]>([])
 const searchOpen = ref(false)
+const logoutDialogOpen = ref(false)
 const searchQuery = ref('')
 const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
@@ -226,6 +229,22 @@ function openSearch() {
 function closeSearch() {
     searchOpen.value = false
     searchQuery.value = ''
+}
+
+function openLogoutDialog() {
+    logoutDialogOpen.value = true
+}
+
+function closeLogoutDialog() {
+    logoutDialogOpen.value = false
+}
+
+function confirmLogout() {
+    abortActiveStream('已停止生成。')
+    authStore.clearAccessToken()
+    sidebarOpen.value = false
+    logoutDialogOpen.value = false
+    void router.replace('/login')
 }
 
 function selectSearchResult(conversationId: number) {
@@ -631,6 +650,22 @@ onBeforeUnmount(() => {
             </section>
         </div>
 
+        <div v-if="logoutDialogOpen" class="logout-dialog-layer" role="presentation" @keydown.esc.stop.prevent="closeLogoutDialog">
+            <button class="logout-dialog-scrim" type="button" aria-label="取消退出登录" @click="closeLogoutDialog"></button>
+
+            <section class="logout-dialog" role="dialog" aria-modal="true" aria-labelledby="logout-dialog-title" aria-describedby="logout-dialog-description">
+                <div class="logout-dialog__content">
+                    <h2 id="logout-dialog-title">退出登录？</h2>
+                    <p id="logout-dialog-description">退出后需要重新登录才能继续使用鱼病问诊助手。</p>
+                </div>
+
+                <div class="logout-dialog__actions">
+                    <button class="logout-dialog__button logout-dialog__button--secondary" type="button" @click="closeLogoutDialog">取消</button>
+                    <button class="logout-dialog__button logout-dialog__button--primary" type="button" @click="confirmLogout">退出登录</button>
+                </div>
+            </section>
+        </div>
+
         <aside class="conversation-sidebar" aria-label="会话列表">
             <div class="sidebar-brand">
                 <img class="sidebar-brand__logo" src="/images/SHOU_logo.svg" alt="上海海洋大学校徽" />
@@ -689,6 +724,10 @@ onBeforeUnmount(() => {
                     <strong>{{ userNickname }}</strong>
                     <span>{{ userUsername }}</span>
                 </div>
+
+                <button class="sidebar-user-panel__logout" type="button" aria-label="退出登录" title="退出登录" @click="openLogoutDialog">
+                    <LogOut :size="17" stroke-width="2" />
+                </button>
             </section>
         </aside>
 
@@ -1020,6 +1059,100 @@ textarea:focus-visible {
     place-items: center;
 }
 
+.logout-dialog-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+}
+
+.logout-dialog-scrim {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: rgba(9, 9, 11, 0.32);
+    backdrop-filter: blur(4px);
+}
+
+.logout-dialog {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    width: min(360px, 100%);
+    gap: 20px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: 0 20px 64px rgba(0, 0, 0, 0.2);
+    padding: 20px;
+}
+
+.logout-dialog__content {
+    display: grid;
+    gap: 8px;
+}
+
+.logout-dialog__content h2,
+.logout-dialog__content p {
+    margin: 0;
+}
+
+.logout-dialog__content h2 {
+    color: var(--foreground);
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.logout-dialog__content p {
+    color: var(--muted-foreground);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.logout-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.logout-dialog__button {
+    min-height: 36px;
+    border: 0;
+    border-radius: calc(var(--radius) - 4px);
+    padding: 0 14px;
+    font-size: 14px;
+    line-height: 1;
+    transition:
+        background-color 160ms ease,
+        color 160ms ease,
+        transform 160ms ease;
+}
+
+.logout-dialog__button:active {
+    transform: scale(0.98);
+}
+
+.logout-dialog__button--secondary {
+    background: var(--accent);
+    color: var(--foreground);
+}
+
+.logout-dialog__button--secondary:hover {
+    background: var(--border);
+}
+
+.logout-dialog__button--primary {
+    background: var(--foreground);
+    color: var(--primary-foreground);
+}
+
+.logout-dialog__button--primary:hover {
+    background: #27272a;
+}
+
 .search-dialog__empty button,
 .conversation-state button {
     min-height: 32px;
@@ -1309,6 +1442,7 @@ textarea:focus-visible {
 .sidebar-user-panel__identity {
     display: grid;
     min-width: 0;
+    flex: 1;
     gap: 2px;
 }
 
@@ -1330,6 +1464,33 @@ textarea:focus-visible {
     color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.2;
+}
+
+.sidebar-user-panel__logout {
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: calc(var(--radius) - 4px);
+    background: transparent;
+    color: var(--muted-foreground);
+    transition:
+        background-color 160ms ease,
+        color 160ms ease,
+        transform 160ms ease;
+}
+
+.sidebar-user-panel__logout:hover,
+.sidebar-user-panel__logout:focus-visible {
+    background: var(--accent);
+    color: var(--foreground);
+}
+
+.sidebar-user-panel__logout:active {
+    transform: scale(0.96);
 }
 
 .chat-workspace {
