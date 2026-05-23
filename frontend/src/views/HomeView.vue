@@ -21,6 +21,7 @@ const sidebarOpen = ref(false)
 const authStore = useAuthStore()
 const selectedConversationId = ref<number>(0)
 const draftMessage = ref('')
+const messageInputComposing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const messagePane = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<Attachment[]>([])
@@ -269,6 +270,27 @@ function createPendingConversation() {
 
 function choosePrompt(prompt: string) {
     draftMessage.value = prompt
+}
+
+function handleMessageInputCompositionStart() {
+    messageInputComposing.value = true
+}
+
+function handleMessageInputCompositionEnd() {
+    messageInputComposing.value = false
+}
+
+function handleMessageInputKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+        return
+    }
+
+    if (event.isComposing || messageInputComposing.value || event.keyCode === 229) {
+        return
+    }
+
+    event.preventDefault()
+    sendMessage()
 }
 
 function openFilePicker() {
@@ -755,7 +777,13 @@ onBeforeUnmount(() => {
                         <Paperclip :size="19" stroke-width="2" />
                     </button>
 
-                    <textarea v-model="draftMessage" rows="1" placeholder="输入鱼种、症状、水温、发病时长..." @keydown.enter.exact.prevent="sendMessage"></textarea>
+                    <textarea
+                        v-model="draftMessage"
+                        rows="1"
+                        placeholder="输入鱼种、症状、水温、发病时长..."
+                        @compositionstart="handleMessageInputCompositionStart"
+                        @compositionend="handleMessageInputCompositionEnd"
+                        @keydown="handleMessageInputKeydown"></textarea>
 
                     <button class="send-button" type="submit" :disabled="!canSend" aria-label="发送">
                         <SendHorizontal :size="19" stroke-width="2.2" />
