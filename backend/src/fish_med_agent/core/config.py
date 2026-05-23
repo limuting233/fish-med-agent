@@ -90,5 +90,8 @@ class Settings(BaseSettings):
         # postgresql+psycopg://user:password@host:port/dbname
         return f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
+    @property
+    def refresh_token_cookie_path(self) -> str:
+        return f"{self.api_prefix}/auth/token/refresh"
 
 settings = Settings()
