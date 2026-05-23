@@ -33,6 +33,7 @@ export type LoginResponse = ApiResponse<LoginData>
 // 登录请求函数
 export function loginRequest(payload: LoginRequest): Promise<LoginResponse> {
     return http.post<LoginResponse>('/auth/login', payload, {
+        credentials: 'include',
         skipAuth: true,
         rawResponse: true,
     })

@@ -55,6 +55,11 @@ export const useAuthStore = defineStore('auth', () => {
         isActive.value = accountIsActive
     }
 
+    const setToken = (token: string, tokenExpiresAt: number) => {
+        accessToken.value = token
+        expiresAt.value = tokenExpiresAt
+    }
+
     const setUserProfile = (profile: { username?: string | null; nickname?: string | null; avatarUrl?: string | null; isActive?: boolean | null }) => {
         username.value = profile.username ?? username.value
         nickname.value = profile.nickname ?? nickname.value
@@ -93,6 +98,7 @@ export const useAuthStore = defineStore('auth', () => {
         avatarUrl,
         isActive,
         setAccessToken,
+        setToken,
         setUserProfile,
         clearAccessToken,
         getAccessToken,

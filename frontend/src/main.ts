@@ -4,6 +4,6 @@ import { createPinia } from 'pinia'
 import router from './router'
 
 const app = createApp(App)
-app.use(router)  //  路由
 app.use(createPinia())  //  状态管理
+app.use(router)  //  路由
 app.mount('#app')

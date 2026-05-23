@@ -25,6 +25,12 @@ export type UploadOptions = Omit<RequestOptions, 'method' | 'body'> & {
     fields?: Record<string, QueryValue>
 }
 
+type TokenData = {
+    access_token: string
+    token_type: string
+    expires_at: number
+}
+
 export class RequestError<T = unknown> extends Error {
     status: number
     code?: number
@@ -51,6 +57,10 @@ export class RequestError<T = unknown> extends Error {
 
 const DEFAULT_BASE_URL = '/api/v1'  // 默认基础URL
 const DEFAULT_TIMEOUT = 30 * 1000  // 30秒超时
+const REFRESH_TOKEN_PATH = '/auth/token/refresh'
+const INVALID_ACCESS_TOKEN_CODE = 401002
+const INVALID_REFRESH_TOKEN_CODE = 401003
+let refreshTokenPromise: Promise<TokenData> | null = null
 
 
 // 获取基础URL
@@ -111,7 +121,30 @@ function normalizeBody(body: RequestBody, headers: Headers) {
     return body as BodyInit
 }
 
+function isRefreshTokenRequest(url: string) {
+    return url.includes(REFRESH_TOKEN_PATH)
+}
 
+function getApiCode(payload: unknown) {
+    if (!payload || typeof payload !== 'object' || !('code' in payload)) {
+        return undefined
+    }
+
+    const code = (payload as Partial<ApiResponse<unknown>>).code
+    return typeof code === 'number' ? code : undefined
+}
+
+function redirectToLogin() {
+    const authStore = useAuthStore()
+    authStore.clearAccessToken()
+
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    if (window.location.pathname === '/login') {
+        return
+    }
+
+    window.location.replace(`/login?redirect=${encodeURIComponent(currentPath)}`)
+}
 
 async function parseResponse(response: Response) {
     if (response.status === 204) {
@@ -127,27 +160,115 @@ async function parseResponse(response: Response) {
     return response.text()
 }
 
+async function refreshAccessTokenRequest() {
+    const response = await fetch(buildUrl(REFRESH_TOKEN_PATH), {
+        method: 'POST',
+        credentials: 'include',
+    })
+    const payload = await parseResponse(response)
+    const payloadCode = getApiCode(payload)
+
+    if (payloadCode === INVALID_REFRESH_TOKEN_CODE) {
+        redirectToLogin()
+    }
+
+    if (!response.ok) {
+        const errorPayload = payload as Partial<ApiResponse<unknown>> | null
+
+        throw new RequestError(errorPayload?.message || response.statusText || 'Refresh token failed', {
+            status: response.status,
+            code: errorPayload?.code,
+            requestId: errorPayload?.request_id,
+            data: payload,
+        })
+    }
+
+    const apiPayload = payload as Partial<ApiResponse<TokenData>> | null
+
+    const tokenData = apiPayload?.data
+
+    if (!tokenData || apiPayload.code !== 200) {
+        if (apiPayload?.code === INVALID_REFRESH_TOKEN_CODE) {
+            redirectToLogin()
+        }
+
+        throw new RequestError(apiPayload?.message || 'Refresh token failed', {
+            status: response.status,
+            code: apiPayload?.code,
+            requestId: apiPayload?.request_id,
+            data: payload,
+        })
+    }
+
+    const authStore = useAuthStore()
+    authStore.setToken(tokenData.access_token, tokenData.expires_at)
+    return tokenData
+}
+
+export async function refreshAccessToken() {
+    if (!refreshTokenPromise) {
+        refreshTokenPromise = refreshAccessTokenRequest().finally(() => {
+            refreshTokenPromise = null
+        })
+    }
+
+    return refreshTokenPromise
+}
+
 export async function request<T = unknown>(url: string, options: RequestOptions = {}): Promise<T> {
     const { params, timeout = DEFAULT_TIMEOUT, skipAuth = false, rawResponse = false, headers, body, ...requestInit } = options
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), timeout)
-    const requestHeaders = new Headers(headers)
-    const accessToken = getAccessToken()
-    const authorization = requestHeaders.get('Authorization')
-
-    if (accessToken && !skipAuth && !authorization?.trim()) {
-        requestHeaders.set('Authorization', `Bearer ${accessToken}`)
-    }
+    const shouldUseAuth = !skipAuth && !isRefreshTokenRequest(url)
 
     try {
-        const response = await fetch(buildUrl(url, params), {
-            ...requestInit,
-            headers: requestHeaders,
-            body: normalizeBody(body, requestHeaders),
-            signal: controller.signal,
-        })
+        if (shouldUseAuth && !getAccessToken()) {
+            try {
+                await refreshAccessToken()
+            } catch (error) {
+                const authStore = useAuthStore()
+                authStore.clearAccessToken()
+                if (error instanceof RequestError && error.code === INVALID_REFRESH_TOKEN_CODE) {
+                    redirectToLogin()
+                }
+                throw error
+            }
+        }
 
-        const payload = await parseResponse(response)
+        const send = async () => {
+            const requestHeaders = new Headers(headers)
+            const accessToken = getAccessToken()
+            const authorization = requestHeaders.get('Authorization')
+
+            if (accessToken && !skipAuth && !authorization?.trim()) {
+                requestHeaders.set('Authorization', `Bearer ${accessToken}`)
+            }
+
+            return fetch(buildUrl(url, params), {
+                ...requestInit,
+                headers: requestHeaders,
+                body: normalizeBody(body, requestHeaders),
+                signal: controller.signal,
+            })
+        }
+
+        let response = await send()
+        let payload = await parseResponse(response)
+
+        if (shouldUseAuth && getApiCode(payload) === INVALID_ACCESS_TOKEN_CODE) {
+            try {
+                await refreshAccessToken()
+                response = await send()
+                payload = await parseResponse(response)
+            } catch (error) {
+                const authStore = useAuthStore()
+                authStore.clearAccessToken()
+                if (error instanceof RequestError && error.code === INVALID_REFRESH_TOKEN_CODE) {
+                    redirectToLogin()
+                }
+                throw error
+            }
+        }
 
         if (!response.ok) {
             const errorPayload = payload as Partial<ApiResponse<unknown>> | null
