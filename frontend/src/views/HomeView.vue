@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Clock, FileImage, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import MarkdownIt from 'markdown-it'
 import { getCurrentUserRequest } from '@/api/auth'
 import { fetchConversationList, type Conversation, type ConversationMessage } from '@/api/conversation'
 import { useAuthStore } from '@/stores/auth'
@@ -39,6 +40,11 @@ let activeStream: {
 const conversations = ref<Conversation[]>([])
 
 const samplePrompts = ['鱼体表白点', '鳃部发红', '鱼群浮头']
+const markdown = new MarkdownIt({
+    html: false,
+    breaks: true,
+    linkify: true,
+})
 
 const groupedConversations = computed(() =>
     [
@@ -144,6 +150,10 @@ function getLastMessage(messages: Conversation['messages']) {
 
 function getMessageContent(message?: ConversationMessage) {
     return message?.content ?? ''
+}
+
+function renderAssistantMarkdown(content: string) {
+    return markdown.render(content || '正在分析...')
 }
 
 function getMetadataDate(conversation: Conversation, key: string) {
@@ -699,7 +709,8 @@ onBeforeUnmount(() => {
                             </div>
 
                             <div class="message-bubble" :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
-                                <p>{{ message.content || (message.role === 'assistant' ? '正在分析...' : '') }}</p>
+                                <div v-if="message.role === 'assistant'" class="message-markdown" v-html="renderAssistantMarkdown(message.content)"></div>
+                                <p v-else>{{ message.content }}</p>
                             </div>
                         </div>
                     </article>
@@ -1409,7 +1420,7 @@ textarea:focus-visible {
 
 .message-list {
     display: grid;
-    gap: 22px;
+    gap: 30px;
     width: min(100%, 920px);
     margin: 0 auto;
     padding: 28px clamp(16px, 3vw, 28px) 190px;
@@ -1427,6 +1438,10 @@ textarea:focus-visible {
 
 .chat-message--assistant {
     justify-content: flex-start;
+}
+
+.chat-message--assistant .assistant-mark {
+    display: none;
 }
 
 .assistant-mark {
@@ -1449,6 +1464,11 @@ textarea:focus-visible {
     gap: 6px;
 }
 
+.chat-message--assistant .chat-message__content {
+    width: 100%;
+    max-width: min(780px, 100%);
+}
+
 .chat-message--user .chat-message__content {
     justify-items: end;
 }
@@ -1466,6 +1486,10 @@ textarea:focus-visible {
     justify-content: flex-end;
 }
 
+.chat-message--assistant .chat-message__meta {
+    display: none;
+}
+
 .message-bubble {
     display: grid;
     gap: 12px;
@@ -1476,21 +1500,124 @@ textarea:focus-visible {
 }
 
 .chat-message--user .message-bubble {
-    border: 1px solid var(--border);
+    border: 0;
     background: var(--secondary);
     color: var(--secondary-foreground);
-    padding: 12px 14px;
+    border-radius: 18px;
+    padding: 11px 15px;
+    font-size: 15px;
+    line-height: 1.55;
 }
 
 .chat-message--assistant .message-bubble {
-    border: 1px solid var(--border);
-    background: var(--card);
-    box-shadow: var(--shadow-sm);
-    padding: 14px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1.78;
 }
 
 .message-bubble p {
     margin: 0;
+}
+
+.message-markdown {
+    display: grid;
+    gap: 10px;
+    overflow-wrap: anywhere;
+}
+
+.message-markdown :deep(h1),
+.message-markdown :deep(h2),
+.message-markdown :deep(h3),
+.message-markdown :deep(h4) {
+    margin: 0;
+    color: var(--foreground);
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.message-markdown :deep(h1) {
+    font-size: 18px;
+}
+
+.message-markdown :deep(h2),
+.message-markdown :deep(h3),
+.message-markdown :deep(h4) {
+    font-size: 16px;
+}
+
+.message-markdown :deep(p),
+.message-markdown :deep(ul),
+.message-markdown :deep(ol),
+.message-markdown :deep(blockquote),
+.message-markdown :deep(pre),
+.message-markdown :deep(table) {
+    margin: 0;
+}
+
+.message-markdown :deep(ul),
+.message-markdown :deep(ol) {
+    display: grid;
+    gap: 5px;
+    padding-left: 20px;
+}
+
+.message-markdown :deep(li) {
+    padding-left: 2px;
+}
+
+.message-markdown :deep(strong) {
+    font-weight: 600;
+}
+
+.message-markdown :deep(a) {
+    color: var(--ocean-blue);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.message-markdown :deep(code) {
+    border-radius: 5px;
+    background: var(--muted);
+    padding: 2px 5px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+    font-size: 0.92em;
+}
+
+.message-markdown :deep(pre) {
+    overflow-x: auto;
+    border-radius: calc(var(--radius) - 4px);
+    background: var(--muted);
+    padding: 10px 12px;
+}
+
+.message-markdown :deep(pre code) {
+    display: block;
+    background: transparent;
+    padding: 0;
+    white-space: pre;
+}
+
+.message-markdown :deep(blockquote) {
+    border-left: 3px solid var(--border);
+    color: var(--muted-foreground);
+    padding-left: 10px;
+}
+
+.message-markdown :deep(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+.message-markdown :deep(th),
+.message-markdown :deep(td) {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
 }
 
 .message-bubble--pending {
