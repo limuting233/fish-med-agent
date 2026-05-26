@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     COOKIE_SECURE: bool
     COOKIE_SAMEITE: str
 
+    # MinIO 对象存储配置
+    MINIO_ENDPOINT: str        
+    MINIO_ACCESS_KEY: str
+    MINIO_SECRET_KEY: str
+    MINIO_BUCKET: str
+    MINIO_REGION: str 
+
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
         env_file_encoding="utf-8",
