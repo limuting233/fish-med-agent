@@ -55,3 +55,4 @@ htmlcov/
 # IDE / editor files
 .idea/
 .vscode/
+.trae/
