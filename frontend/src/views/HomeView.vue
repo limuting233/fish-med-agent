@@ -1048,7 +1048,7 @@ onBeforeUnmount(() => {
                             <FileImage v-else :size="18" stroke-width="2" />
                             <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
                             <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
-                                <X :size="17" stroke-width="2.4" />
+                                <X :size="14" stroke-width="2.4" />
                             </button>
                         </div>
                     </div>
@@ -1392,12 +1392,12 @@ textarea:focus-visible {
 }
 
 .logout-dialog__button--primary {
-    background: var(--foreground);
+    background: var(--ocean-blue);
     color: var(--primary-foreground);
 }
 
 .logout-dialog__button--primary:hover {
-    background: #27272a;
+    background: var(--ocean-blue-hover);
 }
 
 .search-dialog__empty button,
@@ -1741,6 +1741,7 @@ textarea:focus-visible {
 }
 
 .chat-workspace {
+    --message-scroll-mask-height: 86px;
     position: relative;
     display: grid;
     min-width: 0;
@@ -1749,6 +1750,18 @@ textarea:focus-visible {
     grid-template-rows: 65px minmax(0, 1fr);
     overflow: hidden;
     background: var(--background);
+}
+
+.chat-workspace::after {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+    height: var(--message-scroll-mask-height);
+    background: var(--background);
+    content: '';
+    pointer-events: none;
 }
 
 .chat-header {
@@ -2482,6 +2495,7 @@ textarea:focus-visible {
 
 @media (max-width: 640px) {
     .chat-workspace {
+        --message-scroll-mask-height: 72px;
         grid-template-rows: 58px minmax(0, 1fr);
     }
 
