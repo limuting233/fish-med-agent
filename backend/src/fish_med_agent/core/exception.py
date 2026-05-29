@@ -83,6 +83,26 @@ class UnsupportedFileTypeError(BizException):
     message = "不支持的文件类型，仅支持 jpg/png/webp/gif"
 
 
+class NoFileUploadedError(BizException):
+    """
+    没有上传任何文件。
+    """
+
+    status_code = HTTPStatus.BAD_REQUEST
+    code = 400002
+    message = "请至少上传一张图片"
+
+
+class TooManyFilesError(BizException):
+    """
+    上传文件数量超过限制。
+    """
+
+    status_code = HTTPStatus.BAD_REQUEST
+    code = 400003
+    message = "一次最多上传 6 张图片"
+
+
 class UploadFailedError(BizException):
     """
     对象存储上传失败。

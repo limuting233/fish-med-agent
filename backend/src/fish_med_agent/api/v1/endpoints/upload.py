@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fish_med_agent.api.deps import get_current_user_id
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.schemas.response import ApiResponse, success_response
-from fish_med_agent.schemas.upload import UploadImageResponse
+from fish_med_agent.schemas.upload import UploadImagesResponse
 from fish_med_agent.service.upload_service import UploadService
 
 logger = get_logger(__name__)
@@ -11,32 +11,32 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-@router.post("/image", response_model=ApiResponse[UploadImageResponse])
+@router.post("/images", response_model=ApiResponse[UploadImagesResponse])
 async def upload_image(
         http_request: Request,
-        file: UploadFile = File(..., description="待上传的图片文件"),
+        files: list[UploadFile] = File(..., description="待上传的图片文件，最多 6 张"),
         current_user_id: int = Depends(get_current_user_id),
 ):
     """
-    上传图片到 MinIO 对象存储。
+    批量上传图片到 MinIO 对象存储。
 
     限制：
+    - 数量：一次 1~6 张（multipart 里用同一个字段名 `files` 重复传多个文件）
     - 类型：jpg / png / webp / gif（按 magic number 校验，不信 Content-Type）
     - 大小：单张最大 10MB
     - 鉴权：必须携带有效 access token
 
+    任一张校验/上传失败则整批失败（已写入的不回滚）。
+
     Returns:
-        UploadImageResponse:
-            - object_key: 对象存储 key，形如 images/yyyy/mm/dd/{uuid}.{ext}
-            - content_type: 服务端按 magic number 检测出的 MIME，例如 image/jpeg
-            - extension: 文件扩展名，例如 jpg
-            - size: 文件大小（字节）
-            - original_filename: 客户端上传时的原始文件名（可能为 null）
+        UploadImagesResponse:
+            - images: 上传结果列表，顺序与上传顺序一致，每项含
+              object_key / content_type / extension / size / original_filename
     """
     request_id = getattr(http_request.state, "request_id")
     upload_service = UploadService()
-    result = await upload_service.upload_image(current_user_id, file)
+    images = await upload_service.upload_images(current_user_id, files)
     return success_response(
         request_id=request_id,
-        data=result,
+        data=UploadImagesResponse(images=images),
     )
