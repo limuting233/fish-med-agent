@@ -3,8 +3,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Clock, FileImage, LogOut, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { getCurrentUserRequest } from '@/api/auth'
-import { fetchConversationList, type Conversation, type ConversationMessage } from '@/api/conversation'
+import { fetchConversationList, type Conversation, type ConversationMessage, type MessageImage } from '@/api/conversation'
+import { deleteImage, uploadImage, type UploadedImage } from '@/api/upload'
 import { useAuthStore } from '@/stores/auth'
 import { streamChat, type StreamSession } from '@/utils/stream'
 
@@ -14,10 +16,24 @@ type Attachment = {
     id: string
     name: string
     size: string
-    type: 'image' | 'file'
+    file: File
+    type: 'image'
     previewUrl?: string
+    status?: 'pending' | 'uploading' | 'uploaded' | 'deleting'
+    objectKey?: string
+    uploadedImage?: UploadedImage
+    error?: string
 }
 
+type MessageImageView = {
+    id: string
+    name: string
+    previewUrl?: string
+    objectKey?: string
+    size?: number
+}
+
+const MAX_IMAGE_ATTACHMENTS = 6
 const sidebarOpen = ref(false)
 const authStore = useAuthStore()
 const router = useRouter()
@@ -27,6 +43,10 @@ const messageInputComposing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const messagePane = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<Attachment[]>([])
+const activeImageUploadCount = ref(0)
+const activeImageDeleteCount = ref(0)
+const uploadQueue: Attachment[] = []
+let uploadQueueRunning = false
 const searchOpen = ref(false)
 const logoutDialogOpen = ref(false)
 const searchQuery = ref('')
@@ -76,10 +96,14 @@ const activeConversationTitle = computed(() => {
 })
 
 const activeMessages = computed(() => activeConversation.value?.messages ?? [])
+const imagesUploading = computed(() => activeImageUploadCount.value > 0)
+const imagesDeleting = computed(() => activeImageDeleteCount.value > 0)
+const imagesBusy = computed(() => imagesUploading.value || imagesDeleting.value)
+const attachmentsReady = computed(() => pendingAttachments.value.every((attachment) => attachment.status === 'uploaded'))
 
 // 是否可以发送消息，有文本的情况下才允许发送
 const canSend = computed(() => {
-    return draftMessage.value.trim().length > 0 && !responseGenerating.value
+    return draftMessage.value.trim().length > 0 && !responseGenerating.value && !imagesBusy.value && attachmentsReady.value
 })
 
 const searchResults = computed(() => {
@@ -256,7 +280,7 @@ function createConversation() {
     abortActiveStream('已停止生成。')
     selectedConversationId.value = 0
     draftMessage.value = ''
-    pendingAttachments.value = []
+    clearPendingAttachments()
     sidebarOpen.value = false
 }
 
@@ -319,30 +343,226 @@ function openFilePicker() {
 function handleFileChange(event: Event) {
     const input = event.target as HTMLInputElement
     const selectedFiles = Array.from(input.files ?? [])
-    const availableSlots = Math.max(0, 5 - pendingAttachments.value.length)
+    const imageFiles = selectedFiles.filter((file) => file.type.startsWith('image/'))
+    const availableSlots = Math.max(0, MAX_IMAGE_ATTACHMENTS - pendingAttachments.value.length)
 
-    selectedFiles.slice(0, availableSlots).forEach((file) => {
-        const isImage = file.type.startsWith('image/')
-        pendingAttachments.value.push({
+    if (imageFiles.length < selectedFiles.length) {
+        toast.warning('只能上传图片文件')
+    }
+
+    if (imageFiles.length > availableSlots) {
+        toast.warning(`最多上传 ${MAX_IMAGE_ATTACHMENTS} 张图片`)
+    }
+
+    imageFiles.slice(0, availableSlots).forEach((file) => {
+        const attachment: Attachment = {
             id: createId('attachment'),
             name: file.name,
             size: formatFileSize(file.size),
-            type: isImage ? 'image' : 'file',
-            previewUrl: isImage ? URL.createObjectURL(file) : undefined,
-        })
+            file,
+            type: 'image',
+            previewUrl: URL.createObjectURL(file),
+            status: 'pending',
+        }
+
+        pendingAttachments.value.push(attachment)
+        uploadQueue.push(attachment)
     })
 
+    void processUploadQueue()
     input.value = ''
 }
 
-function removePendingAttachment(attachmentId: string) {
+async function removePendingAttachment(attachmentId: string) {
     const attachment = pendingAttachments.value.find((item) => item.id === attachmentId)
+    if (!attachment || attachment.status === 'deleting') {
+        return
+    }
 
-    if (attachment?.previewUrl) {
+    if (attachment.status !== 'uploaded' || !attachment.objectKey) {
+        removeFromUploadQueue(attachment.id)
+        removePendingAttachmentLocally(attachment)
+        return
+    }
+
+    activeImageDeleteCount.value += 1
+    updatePendingAttachment(attachment.id, { status: 'deleting', error: undefined })
+
+    try {
+        await deleteImage(attachment.objectKey)
+        removePendingAttachmentLocally(attachment)
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '图片删除失败'
+        toast.error(message || '图片删除失败')
+        updatePendingAttachment(attachment.id, {
+            status: 'uploaded',
+            error: undefined,
+        })
+    } finally {
+        activeImageDeleteCount.value = Math.max(0, activeImageDeleteCount.value - 1)
+    }
+}
+
+function removePendingAttachmentLocally(attachment: Attachment) {
+    if (attachment.previewUrl) {
         URL.revokeObjectURL(attachment.previewUrl)
     }
 
-    pendingAttachments.value = pendingAttachments.value.filter((item) => item.id !== attachmentId)
+    pendingAttachments.value = pendingAttachments.value.filter((item) => item.id !== attachment.id)
+    removeFromUploadQueue(attachment.id)
+}
+
+function removeFromUploadQueue(attachmentId: string) {
+    const index = uploadQueue.findIndex((attachment) => attachment.id === attachmentId)
+
+    if (index !== -1) {
+        uploadQueue.splice(index, 1)
+    }
+}
+
+function clearPendingAttachments(options: { revokePreviews?: boolean } = { revokePreviews: true }) {
+    if (options.revokePreviews !== false) {
+        pendingAttachments.value.forEach((attachment) => {
+            if (attachment.previewUrl) {
+                URL.revokeObjectURL(attachment.previewUrl)
+            }
+        })
+    }
+
+    pendingAttachments.value = []
+    uploadQueue.splice(0, uploadQueue.length)
+}
+
+function updatePendingAttachment(attachmentId: string, patch: Partial<Attachment>) {
+    pendingAttachments.value = pendingAttachments.value.map((attachment) => {
+        if (attachment.id !== attachmentId) {
+            return attachment
+        }
+
+        return {
+            ...attachment,
+            ...patch,
+        }
+    })
+}
+
+function getAttachmentStatusText(attachment: Attachment) {
+    if (attachment.status === 'uploading') {
+        return '上传中'
+    }
+
+    if (attachment.status === 'uploaded') {
+        return '已上传'
+    }
+
+    if (attachment.status === 'deleting') {
+        return '删除中'
+    }
+
+    return attachment.size
+}
+
+async function uploadAttachment(attachment: Attachment) {
+    activeImageUploadCount.value += 1
+    updatePendingAttachment(attachment.id, { status: 'uploading' })
+
+    try {
+        const uploadedImage = await uploadImage(attachment.file)
+        if (!pendingAttachments.value.some((item) => item.id === attachment.id)) {
+            return
+        }
+
+        updatePendingAttachment(attachment.id, {
+            status: 'uploaded',
+            objectKey: uploadedImage.object_key,
+            uploadedImage,
+            error: undefined,
+        })
+    } catch (error) {
+        if (!pendingAttachments.value.some((item) => item.id === attachment.id)) {
+            return
+        }
+
+        const message = error instanceof Error ? error.message : '图片上传失败'
+        removePendingAttachmentLocally(attachment)
+        toast.error(message || '图片上传失败')
+    } finally {
+        activeImageUploadCount.value = Math.max(0, activeImageUploadCount.value - 1)
+    }
+}
+
+async function processUploadQueue() {
+    if (uploadQueueRunning) {
+        return
+    }
+
+    uploadQueueRunning = true
+
+    try {
+        while (uploadQueue.length > 0) {
+            const attachment = uploadQueue.shift()
+            if (!attachment || !pendingAttachments.value.some((item) => item.id === attachment.id)) {
+                continue
+            }
+
+            await uploadAttachment(attachment)
+        }
+    } finally {
+        uploadQueueRunning = false
+    }
+}
+
+function createMessageImages(attachments: Attachment[], uploadedImages: UploadedImage[]): MessageImage[] {
+    return attachments.map((attachment, index) => {
+        const uploadedImage = uploadedImages[index]
+
+        return {
+            object_key: uploadedImage?.object_key,
+            content_type: uploadedImage?.content_type,
+            extension: uploadedImage?.extension,
+            size: uploadedImage?.size ?? attachment.file.size,
+            original_filename: uploadedImage?.original_filename ?? attachment.name,
+            previewUrl: attachment.previewUrl,
+            name: attachment.name,
+        }
+    })
+}
+
+function getMessageImages(message: ConversationMessage): MessageImageView[] {
+    return (message.images ?? []).map((image, index) => {
+        if (typeof image === 'string') {
+            return {
+                id: `${message.created}-image-${index}`,
+                name: image.split('/').pop() || '图片',
+                objectKey: image,
+            }
+        }
+
+        const objectKey = image.object_key
+        return {
+            id: `${message.created}-image-${index}`,
+            name: image.name || image.original_filename || objectKey?.split('/').pop() || '图片',
+            previewUrl: image.previewUrl,
+            objectKey,
+            size: image.size,
+        }
+    })
+}
+
+function revokeConversationPreviewUrls() {
+    conversations.value.forEach((conversation) => {
+        const messages = conversation.messages ?? []
+
+        messages.forEach((message) => {
+            const images = message.images ?? []
+
+            images.forEach((image) => {
+                if (typeof image !== 'string' && image.previewUrl) {
+                    URL.revokeObjectURL(image.previewUrl)
+                }
+            })
+        })
+    })
 }
 
 function updateConversationState(conversationId: number, updater: (conversation: Conversation) => Conversation) {
@@ -434,10 +654,14 @@ function abortActiveStream(fallbackText?: string) {
     responseGenerating.value = false
 }
 
-function sendMessage() {
+async function sendMessage() {
     if (!canSend.value) {
         return
     }
+
+    const content = draftMessage.value.trim()
+    const attachmentsToSend = pendingAttachments.value.filter((attachment) => attachment.status === 'uploaded' && attachment.uploadedImage)
+    const uploadedImages = attachmentsToSend.map((attachment) => attachment.uploadedImage as UploadedImage)
 
     const existingConversation = conversations.value.find((conversation) => conversation.id === selectedConversationId.value)
     const activeConversationItem = existingConversation ?? createPendingConversation()
@@ -447,12 +671,13 @@ function sendMessage() {
         conversations.value = [activeConversationItem, ...conversations.value]
     }
 
-    const content = draftMessage.value.trim()
     const currentMessages = activeConversationItem.messages ?? []
     const now = new Date()
     const nowIso = now.toISOString()
     const assistantMessageIndex = currentMessages.length + 1
     const streamToken = createId('stream')
+    const messageImages = createMessageImages(attachmentsToSend, uploadedImages)
+    const imageObjectKeys = uploadedImages.map((image) => image.object_key)
 
     updateConversationState(activeId, (conversation) => ({
         ...conversation,
@@ -464,6 +689,7 @@ function sendMessage() {
                 role: 'user',
                 content: content,
                 created: nowIso,
+                images: messageImages.length ? messageImages : null,
             },
             {
                 role: 'assistant',
@@ -479,7 +705,7 @@ function sendMessage() {
     }))
 
     draftMessage.value = ''
-    pendingAttachments.value = []
+    clearPendingAttachments({ revokePreviews: false })
     scrollToBottom()
 
     const session = streamChat(
@@ -487,6 +713,7 @@ function sendMessage() {
             conversation_id: activeConversationItem.id,
             message: {
                 content,
+                images: imageObjectKeys.length ? imageObjectKeys : null,
             },
         },
         {
@@ -608,6 +835,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
     abortActiveStream()
+    clearPendingAttachments()
+    revokeConversationPreviewUrls()
 })
 </script>
 
@@ -771,7 +1000,21 @@ onBeforeUnmount(() => {
 
                             <div class="message-bubble" :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
                                 <div v-if="message.role === 'assistant'" class="message-markdown" v-html="renderAssistantMarkdown(message.content)"></div>
-                                <p v-else>{{ message.content }}</p>
+                                <template v-else>
+                                    <p>{{ message.content }}</p>
+                                    <div v-if="message.images?.length" class="message-attachments" aria-label="已发送图片">
+                                        <div v-for="image in getMessageImages(message)" :key="image.id" class="message-attachment">
+                                            <div class="message-attachment__thumb">
+                                                <img v-if="image.previewUrl" :src="image.previewUrl" :alt="image.name" />
+                                                <FileImage v-else :size="18" stroke-width="2" />
+                                            </div>
+                                            <div class="message-attachment__text">
+                                                <span>{{ image.name }}</span>
+                                                <small>{{ image.objectKey || (image.size ? formatFileSize(image.size) : '已上传图片') }}</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
                             </div>
                         </div>
                     </article>
@@ -792,18 +1035,22 @@ onBeforeUnmount(() => {
 
             <footer class="composer-area">
                 <div v-if="pendingAttachments.length" class="pending-files" aria-label="待发送附件">
-                    <div v-for="attachment in pendingAttachments" :key="attachment.id" class="pending-file">
+                    <div
+                        v-for="attachment in pendingAttachments"
+                        :key="attachment.id"
+                        class="pending-file"
+                        :class="{
+                            'pending-file--uploading': attachment.status === 'pending' || attachment.status === 'uploading',
+                            'pending-file--deleting': attachment.status === 'deleting',
+                        }">
                         <div class="pending-file__preview">
                             <img v-if="attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" />
                             <FileImage v-else :size="18" stroke-width="2" />
+                            <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
+                            <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
+                                <X :size="17" stroke-width="2.4" />
+                            </button>
                         </div>
-                        <div class="pending-file__text">
-                            <span>{{ attachment.name }}</span>
-                            <small>{{ attachment.size }}</small>
-                        </div>
-                        <button type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
-                            <X :size="15" stroke-width="2" />
-                        </button>
                     </div>
                 </div>
 
@@ -812,7 +1059,7 @@ onBeforeUnmount(() => {
                         <Mic :size="19" stroke-width="2" />
                     </button>
 
-                    <button class="composer-icon-button" type="button" aria-label="上传图片" @click="openFilePicker">
+                    <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="上传图片" @click="openFilePicker">
                         <Paperclip :size="19" stroke-width="2" />
                     </button>
 
@@ -828,7 +1075,7 @@ onBeforeUnmount(() => {
                         <SendHorizontal :size="19" stroke-width="2.2" />
                     </button>
 
-                    <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple @change="handleFileChange" />
+                    <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple :disabled="imagesBusy || responseGenerating" @change="handleFileChange" />
                 </form>
             </footer>
         </main>
@@ -1849,6 +2096,11 @@ textarea:focus-visible {
     object-fit: cover;
 }
 
+.message-attachment__text {
+    min-width: 0;
+    flex: 1;
+}
+
 .message-attachment span,
 .pending-file__text span {
     display: block;
@@ -2009,40 +2261,53 @@ textarea:focus-visible {
     .composer-area {
         animation: none;
     }
+
+    .pending-file__spinner::after {
+        animation: none;
+    }
 }
 
 .pending-files {
     display: flex;
     width: 100%;
-    gap: 8px;
+    gap: 10px;
     overflow-x: auto;
     overscroll-behavior-x: contain;
+    padding: 2px 0 4px;
 }
 
 .pending-file {
-    display: flex;
-    min-width: 220px;
-    max-width: 280px;
-    align-items: center;
-    gap: 8px;
-    border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 2px);
-    background: var(--muted);
-    padding: 7px;
+    position: relative;
+    display: inline-flex;
+    width: 124px;
+    height: 124px;
+    flex: 0 0 auto;
+    align-items: stretch;
+    justify-content: stretch;
+}
+
+.pending-file--uploading {
+    opacity: 0.92;
+}
+
+.pending-file--deleting {
+    opacity: 0.74;
 }
 
 .pending-file__preview {
+    position: relative;
     display: inline-flex;
-    width: 42px;
-    height: 42px;
-    flex: 0 0 auto;
+    width: 100%;
+    height: 100%;
+    flex: 1;
     align-items: center;
     justify-content: center;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 4px);
+    border-radius: calc(var(--radius) + 6px);
     background: var(--background);
     color: var(--muted-foreground);
+    box-shadow: var(--shadow-sm);
 }
 
 .pending-file__preview img {
@@ -2051,23 +2316,52 @@ textarea:focus-visible {
     object-fit: cover;
 }
 
-.pending-file__text {
-    min-width: 0;
-    flex: 1;
+.pending-file__spinner {
+    position: absolute;
+    inset: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.68);
+}
+
+.pending-file__spinner::after {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(14, 127, 176, 0.22);
+    border-top-color: var(--ocean-blue);
+    border-radius: 50%;
+    content: '';
+    animation: image-upload-spin 760ms linear infinite;
+}
+
+@keyframes image-upload-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .pending-file button {
-    width: 28px;
-    height: 28px;
-    flex: 0 0 auto;
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 24px;
+    height: 24px;
     border-radius: 50%;
-    background: transparent;
-    color: var(--muted-foreground);
+    background: rgba(9, 9, 11, 0.92);
+    color: var(--primary-foreground);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
 .pending-file button:hover {
-    background: var(--accent);
-    color: var(--accent-foreground);
+    background: rgba(39, 39, 42, 0.96);
+    color: var(--primary-foreground);
+}
+
+.pending-file button:disabled,
+.composer-icon-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
 }
 
 .composer {

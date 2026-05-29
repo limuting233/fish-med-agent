@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
 
-class UploadImageItem(BaseModel):
+class UploadImageResponse(BaseModel):
     """
     单张图片上传结果。
     """
@@ -13,9 +13,17 @@ class UploadImageItem(BaseModel):
     original_filename: str | None = Field(None, description="客户端上传时的原始文件名")
 
 
-class UploadImagesResponse(BaseModel):
+class DeleteImageRequest(BaseModel):
     """
-    批量图片上传响应。
+    删除单张图片请求。
     """
 
-    images: list[UploadImageItem] = Field(..., description="上传成功的图片列表，顺序与上传顺序一致")
+    object_key: str = Field(..., min_length=1, description="上传成功后返回的 object_key")
+
+
+class DeleteImageResponse(BaseModel):
+    """
+    删除单张图片响应。
+    """
+
+    object_key: str = Field(..., description="被删除的 object_key")

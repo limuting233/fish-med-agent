@@ -4,7 +4,17 @@ export type ConversationMessage = {
     role: 'user' | 'assistant'
     content: string
     created: string
-    images?: Record<string, unknown>[] | null
+    images?: (string | MessageImage)[] | null
+}
+
+export type MessageImage = {
+    object_key?: string
+    content_type?: string
+    extension?: string
+    size?: number
+    original_filename?: string | null
+    previewUrl?: string
+    name?: string
 }
 
 export type Conversation = {

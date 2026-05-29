@@ -83,24 +83,34 @@ class UnsupportedFileTypeError(BizException):
     message = "不支持的文件类型，仅支持 jpg/png/webp/gif"
 
 
-class NoFileUploadedError(BizException):
+class InvalidObjectKeyError(BizException):
     """
-    没有上传任何文件。
-    """
-
-    status_code = HTTPStatus.BAD_REQUEST
-    code = 400002
-    message = "请至少上传一张图片"
-
-
-class TooManyFilesError(BizException):
-    """
-    上传文件数量超过限制。
+    object_key 非法（格式不对或越权访问非图片目录）。
     """
 
     status_code = HTTPStatus.BAD_REQUEST
-    code = 400003
-    message = "一次最多上传 6 张图片"
+    code = 400004
+    message = "object_key 非法"
+
+
+class ImageNotFoundError(BizException):
+    """
+    要删除的图片不存在。
+    """
+
+    status_code = HTTPStatus.NOT_FOUND
+    code = 404002
+    message = "图片不存在"
+
+
+class DeleteFailedError(BizException):
+    """
+    对象存储删除失败。
+    """
+
+    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+    code = 500002
+    message = "图片删除失败"
 
 
 class UploadFailedError(BizException):
