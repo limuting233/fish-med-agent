@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -6,6 +7,7 @@ from typing import Any
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fish_med_agent.agents import SYSTEM_PROMPT, dispatch_tool_call, openai_tools_schema
 from fish_med_agent.core.config import settings
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.models import Conversation
@@ -14,11 +16,14 @@ from fish_med_agent.schemas.chat import ChatRequest
 
 logger = get_logger(__name__)
 
-_SYSTEM_PROMPT = (
-    "你是一个面向水产养殖场景的鱼病问答助手。"
-    "请基于用户描述给出可能病因、需要补充确认的信息、处置建议和风险提示。"
-    "不能替代兽医或水产专家现场诊断，遇到高风险情况要建议联系专业人员。"
-)
+# tool-use 循环最大迭代次数，防止 LLM 无限调用工具
+_MAX_TOOL_ITERATIONS = 8
+
+# 注入给 rag_search 的对话历史最大轮数（1 轮 = 1 user + 1 assistant）
+_RAG_HISTORY_MAX_TURNS = 6
+
+# 需要注入 conversation_history 的工具名集合
+_TOOLS_NEEDING_HISTORY = {"rag_search"}
 
 
 class ChatService:
@@ -32,27 +37,25 @@ class ChatService:
         )
         self._conversation_repo = ConversationRepo(db)
 
-    async def generate_stream_response(self, chat_request: ChatRequest, current_user_id: int) -> AsyncGenerator[
-        str, None]:
+    async def generate_stream_response(
+        self, chat_request: ChatRequest, current_user_id: int
+    ) -> AsyncGenerator[str, None]:
+        """生成带 tool-use 循环的流式响应。
+
+        SSE 事件类型：
+        - start: 响应开始
+        - message.delta: 文本内容增量 {content}
+        - tool.call: 工具调用开始 {tool_call_id, name, arguments}
+        - tool.result: 工具调用完成 {tool_call_id, name, ok, error?}
+        - done: 响应正常结束
+        - error: 响应失败 {message}
         """
-        生成聊天流响应
-        Args:
-            chat_request: 聊天请求
-            current_user_id: 当前用户ID
+        conversation_id = chat_request.conversation_id
+        message = chat_request.message
 
-        Returns:
-            聊天流响应
-
-        """
-
-        conversation_id = chat_request.conversation_id  # conversation_id 会话ID
-        message = chat_request.message  # message 用户消息
-
-        # 根据conversation_id,判断该会话是否存在，如果不存在则添加一个新的会话
         exist_conversation = await self._conversation_repo.get_by_id(conversation_id)
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now_iso()
         if not exist_conversation:
-            # 创建新的conversation
             new_conversation = Conversation(
                 title=message.content[:10],
                 user_id=current_user_id,
@@ -61,55 +64,208 @@ class ChatService:
             )
             exist_conversation = await self._conversation_repo.add(new_conversation)
 
-        # 在已经存在的messages基础上，添加本次请求的message，作为新的messages
-        messages = exist_conversation.messages + [{"role": "user", "content": message.content, "created": now}]
+        # 追加本轮用户消息；用 + 拼新 list 以触发 SQLAlchemy dirty 检测
+        messages = exist_conversation.messages + [
+            {"role": "user", "content": message.content, "created": now}
+        ]
 
-        logger.info(f"messages length: {len(messages)}")
+        logger.info(f"chat start: conv={exist_conversation.id} history_len={len(messages)}")
 
-        # 这里需要计算一下messages的token数，不能超过所使用模型的token数的80%
-        # todo 计算messages的token数
         try:
-            yield self._sse(event="start", data={})
-            resp_stream = await self._async_client.chat.completions.create(
-                model=settings.DEEPSEEK_MODEL,
-                messages=[{"role": "system", "content": _SYSTEM_PROMPT}] + [{"role": msg["role"], "content": msg["content"]} for msg in messages],
-                temperature=settings.DEEPSEEK_TEMPERATURE,
-                extra_body={"thinking": {"type": "disabled"}},
-                stream=True,
-            )
+            yield _sse(event="start")
 
-            assistant_content = ""
+            for iteration in range(_MAX_TOOL_ITERATIONS):
+                logger.info(f"tool-use iteration {iteration + 1}/{_MAX_TOOL_ITERATIONS}")
 
-            async for chunk in resp_stream:
-                if not chunk.choices:
+                # 拼请求载荷：system + 历史（剔除 created 字段）
+                payload_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
+                    _strip_message(m) for m in messages
+                ]
+
+                content_buf = ""
+                tool_calls_buf: dict[int, dict[str, Any]] = {}
+                finish_reason: str | None = None
+
+                resp_stream = await self._async_client.chat.completions.create(
+                    model=settings.DEEPSEEK_MODEL,
+                    messages=payload_messages,
+                    tools=openai_tools_schema(),
+                    temperature=settings.DEEPSEEK_TEMPERATURE,
+                    extra_body={"thinking": {"type": "disabled"}},
+                    stream=True,
+                )
+
+                async for chunk in resp_stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+
+                    if delta.content:
+                        content_buf += delta.content
+                        yield _sse(event="message.delta", data={"content": delta.content})
+
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            _accumulate_tool_call(tool_calls_buf, tc_delta)
+
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+
+                # 流结束：根据 finish_reason 决定继续工具循环还是结束
+                if tool_calls_buf:
+                    tool_calls = [tool_calls_buf[i] for i in sorted(tool_calls_buf)]
+
+                    # 追加 assistant 消息（带 tool_calls）
+                    messages = messages + [
+                        {
+                            "role": "assistant",
+                            "content": content_buf or "",
+                            "tool_calls": tool_calls,
+                            "created": _now_iso(),
+                        }
+                    ]
+
+                    # 通知前端工具开始执行
+                    for tc in tool_calls:
+                        yield _sse(
+                            event="tool.call",
+                            data={
+                                "tool_call_id": tc["id"],
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"]["arguments"],
+                            },
+                        )
+
+                    # 抽取最近 N 轮 user/assistant 对话，供需要历史的工具使用
+                    rag_history = _build_rag_history(messages, _RAG_HISTORY_MAX_TURNS)
+
+                    # 并行执行所有工具
+                    results = await asyncio.gather(
+                        *[
+                            dispatch_tool_call(
+                                tc["function"]["name"],
+                                tc["function"]["arguments"],
+                                context=(
+                                    {"conversation_history": rag_history}
+                                    if tc["function"]["name"] in _TOOLS_NEEDING_HISTORY
+                                    else None
+                                ),
+                            )
+                            for tc in tool_calls
+                        ]
+                    )
+
+                    # 追加 tool 结果消息 + 通知前端
+                    tool_messages = []
+                    for tc, result in zip(tool_calls, results):
+                        tool_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": json.dumps(result, ensure_ascii=False),
+                                "created": _now_iso(),
+                            }
+                        )
+                        yield _sse(
+                            event="tool.result",
+                            data={
+                                "tool_call_id": tc["id"],
+                                "name": tc["function"]["name"],
+                                "ok": "error" not in result,
+                                "error": result.get("error"),
+                                "result": result,
+                            },
+                        )
+                    messages = messages + tool_messages
+                    # 继续下一轮，让 LLM 基于工具结果生成最终答案
                     continue
 
-                delta_content = chunk.choices[0].delta.content
-                if not delta_content:
-                    continue
+                # 没有 tool_calls：本轮是最终答案
+                messages = messages + [
+                    {"role": "assistant", "content": content_buf, "created": _now_iso()}
+                ]
+                logger.info(f"chat done: finish_reason={finish_reason}")
+                break
+            else:
+                # for-else：循环耗尽未 break，说明触发了上限
+                logger.warning(f"hit max tool iterations ({_MAX_TOOL_ITERATIONS})")
+                yield _sse(
+                    event="error",
+                    data={"message": "工具调用次数超限，请重新发起对话"},
+                )
+                await self._db.rollback()
+                return
 
-                assistant_content += delta_content
-
-                yield self._sse(event="message.delta", data={"content": delta_content})
-
-            # 成功后保存 user + assistant 消息，更新 last_message_at，commit 到数据库
-            now = datetime.now(timezone.utc).isoformat()
-            messages.append({"role": "assistant", "content": assistant_content, "created": now})
-            exist_conversation.metadata_ = {"last_message_at": now}
+            # 持久化
+            exist_conversation.metadata_ = {"last_message_at": _now_iso()}
             exist_conversation.messages = messages
             await self._conversation_repo.update(exist_conversation)
             await self._db.commit()
-            yield self._sse(event="done", data={})
+            yield _sse(event="done")
 
-        except Exception as e:
+        except Exception:
             logger.exception("chat stream failed")
             await self._db.rollback()
-            yield self._sse(event="error", data={"message": "模型响应失败，请稍后重试"})
+            yield _sse(event="error", data={"message": "模型响应失败，请稍后重试"})
 
-    @staticmethod
-    def _sse(event: str = "message.delta", data: Any | None = None) -> str:
-        if not event or "\n" in event or "\r" in event:
-            raise ValueError("SSE event must be a non-empty single-line string")
 
-        payload = json.dumps(data or {}, ensure_ascii=False, separators=(",", ":"))
-        return f"event: {event}\ndata: {payload}\n\n"
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _build_rag_history(
+    messages: list[dict[str, Any]], max_turns: int
+) -> list[dict[str, str]]:
+    """从完整 messages 抽取最近 max_turns 轮 user/assistant 对话。
+
+    - 跳过纯 tool_calls 的 assistant 消息（无正文）
+    - 跳过 role=tool 的工具结果消息
+    - 只保留 LightRAG 需要的 {role, content} 两个字段
+    - 1 轮 = 1 user + 1 assistant 消息
+    """
+    clean: list[dict[str, str]] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role not in ("user", "assistant"):
+            continue
+        if not content:  # 跳过 content 为空（如纯 tool_calls 的 assistant）
+            continue
+        clean.append({"role": role, "content": content})
+    # 1 轮 = 2 条消息
+    return clean[-2 * max_turns:]
+
+
+def _strip_message(msg: dict[str, Any]) -> dict[str, Any]:
+    """从存储的消息里剔除 LLM 不需要的字段（如 created）。
+
+    保留 role / content / tool_calls / tool_call_id 等 OpenAI 协议字段。
+    """
+    return {k: v for k, v in msg.items() if k != "created"}
+
+
+def _accumulate_tool_call(buf: dict[int, dict[str, Any]], tc_delta: Any) -> None:
+    """把流式 tool_call delta 按 index 累积成完整结构。"""
+    idx = tc_delta.index
+    if idx not in buf:
+        buf[idx] = {
+            "id": "",
+            "type": "function",
+            "function": {"name": "", "arguments": ""},
+        }
+    entry = buf[idx]
+    if tc_delta.id:
+        entry["id"] = tc_delta.id
+    if tc_delta.function:
+        if tc_delta.function.name:
+            entry["function"]["name"] = tc_delta.function.name
+        if tc_delta.function.arguments:
+            entry["function"]["arguments"] += tc_delta.function.arguments
+
+
+def _sse(event: str, data: Any | None = None) -> str:
+    if not event or "\n" in event or "\r" in event:
+        raise ValueError("SSE event must be a non-empty single-line string")
+    payload = json.dumps(data or {}, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {payload}\n\n"
