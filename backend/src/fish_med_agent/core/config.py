@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # Taily 配置
     TAILY_API_KEY: str
 
+    # LightRAG 配置
+    LIGHTRAG_BASE_URL: str
+    LIGHTRAG_API_KEY: str
+    LIGHTRAG_TIMEOUT: float 
+
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
         env_file_encoding="utf-8",
