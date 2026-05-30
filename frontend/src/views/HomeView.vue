@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, LogOut, MessageCircle, Mic, MoreHorizontal, PanelLeft, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Clock, FileImage, LogOut, MessageCircle, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -1067,7 +1067,7 @@ onBeforeUnmount(() => {
                     </button>
 
                     <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="上传图片" @click="openFilePicker">
-                        <Paperclip :size="19" stroke-width="2" />
+                        <FileImage :size="19" stroke-width="2" />
                     </button>
 
                     <textarea
@@ -1928,11 +1928,8 @@ textarea:focus-visible {
         transform 160ms ease;
 }
 
-.header-icon-button:hover {
-    background: var(--accent);
-    color: var(--accent-foreground);
-}
-
+.header-icon-button:hover,
+.header-icon-button:focus-visible,
 .mobile-menu-button:hover,
 .mobile-menu-button:focus-visible,
 .composer-icon-button:hover,
