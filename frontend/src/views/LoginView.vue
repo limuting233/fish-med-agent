@@ -145,7 +145,7 @@ const login = async () => {
         <section class="auth-panel">
             <div class="auth-card">
                 <div class="auth-card__header">
-                    <p class="auth-card__eyebrow">Secure Sign In</p>
+                    <p class="auth-card__eyebrow">Sign In</p>
                     <h2 class="auth-card__title">欢迎回来</h2>
                 </div>
 
