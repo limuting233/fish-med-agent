@@ -905,7 +905,7 @@ onBeforeUnmount(() => {
 
         <aside class="conversation-sidebar" aria-label="会话列表">
             <div class="sidebar-brand">
-                <img class="sidebar-brand__logo" src="/images/SHOU_logo.svg" alt="上海海洋大学校徽" />
+                <img class="sidebar-brand__logo" src="/images/fish-med-agent-logo.svg" alt="Fish Med Agent 图标" />
                 <div class="sidebar-brand__text">
                     <strong>Fish Med Agent</strong>
                     <span>鱼病问诊助手</span>
@@ -1821,12 +1821,14 @@ textarea:focus-visible {
 
 .sidebar-user-panel__logout:hover,
 .sidebar-user-panel__logout:focus-visible {
-    background: var(--accent);
-    color: var(--foreground);
+    background: rgba(14, 127, 176, 0.1);
+    color: var(--ocean-blue);
 }
 
 .sidebar-user-panel__logout:active {
     transform: scale(0.96);
+    background: rgba(14, 127, 176, 0.16);
+    color: var(--ocean-blue-hover);
 }
 
 .chat-workspace {
@@ -1925,12 +1927,13 @@ textarea:focus-visible {
         transform 160ms ease;
 }
 
-.header-icon-button:hover,
-.mobile-menu-button:hover {
+.header-icon-button:hover {
     background: var(--accent);
     color: var(--accent-foreground);
 }
 
+.mobile-menu-button:hover,
+.mobile-menu-button:focus-visible,
 .composer-icon-button:hover,
 .composer-icon-button:focus-visible {
     background: rgba(14, 127, 176, 0.1);

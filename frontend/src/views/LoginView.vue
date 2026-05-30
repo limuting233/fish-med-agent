@@ -126,12 +126,16 @@ const login = async () => {
 
             <div class="brand-panel__content">
                 <div class="brand-header">
-                    <img class="brand-logo" src="/images/SHOU_logo.svg" alt="上海海洋大学校徽" />
-                    <span class="brand-name">上海海洋大学</span>
+                    <span class="brand-logo-pair" aria-label="上海海洋大学与 Fish Med Agent 联名标识">
+                        <img class="brand-logo brand-logo--school" src="/images/SHOU_logo.svg" alt="上海海洋大学校徽" />
+                        <span class="brand-logo-pair__divider" aria-hidden="true"></span>
+                        <img class="brand-logo brand-logo--agent" src="/images/fish-med-agent-logo.svg" alt="Fish Med Agent 图标" />
+                    </span>
+                    <span class="brand-name">SHOU × Fish Med Agent</span>
                 </div>
 
                 <div class="brand-copy">
-                    <p class="eyebrow">Aqua Health Intelligence</p>
+                    <p class="eyebrow">Aqua Health AI</p>
                     <h1 class="brand-title">Fish Med Agent</h1>
                     <p class="brand-description">面向水产健康管理的智能诊断平台，结合图像识别与养殖语境，让疾病排查更快进入有效判断。</p>
                 </div>
@@ -283,6 +287,20 @@ const login = async () => {
     height: 28px;
     object-fit: contain;
     flex: 0 0 auto;
+}
+
+.brand-logo-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+}
+
+.brand-logo-pair__divider {
+    width: 1px;
+    height: 20px;
+    border-radius: 999px;
+    background: rgba(3, 36, 58, 0.18);
 }
 
 .brand-name,
