@@ -2072,33 +2072,38 @@ textarea:focus-visible {
     position: fixed;
     inset: 0;
     z-index: 45;
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     background: rgba(9, 9, 11, 0.82);
     backdrop-filter: blur(8px);
-    padding: 22px;
+    padding: 58px 18px 18px;
 }
 
 .image-preview-dialog {
     position: relative;
-    display: grid;
-    width: min(100%, 1120px);
-    height: min(100%, 820px);
-    place-items: center;
+    display: flex;
+    max-width: calc(100vw - 36px);
+    max-height: calc(100dvh - 76px);
+    align-items: center;
+    justify-content: center;
 }
 
 .image-preview-dialog img {
-    max-width: 100%;
-    max-height: 100%;
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: calc(100vw - 36px);
+    max-height: calc(100dvh - 76px);
     border-radius: calc(var(--radius) - 2px);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
     object-fit: contain;
 }
 
 .image-preview-close {
-    position: absolute;
-    top: 0;
-    right: 0;
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
     z-index: 1;
     display: inline-flex;
     width: 38px;
@@ -2114,6 +2119,16 @@ textarea:focus-visible {
 
 .image-preview-close:hover {
     background: var(--background);
+}
+
+@supports not (height: 100dvh) {
+    .image-preview-dialog {
+        max-height: calc(100vh - 76px);
+    }
+
+    .image-preview-dialog img {
+        max-height: calc(100vh - 76px);
+    }
 }
 
 .search-dialog__empty button,
