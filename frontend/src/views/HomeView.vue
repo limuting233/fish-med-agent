@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, LogOut, MessageCircle, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Clock, FileImage, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -36,6 +36,7 @@ type MessageImageView = {
 const MAX_IMAGE_ATTACHMENTS = 6
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const suppressCollapsedBrandHover = ref(false)
 const authStore = useAuthStore()
 const router = useRouter()
 const selectedConversationId = ref<number>(0)
@@ -64,7 +65,6 @@ let activeStream: {
 
 const conversations = ref<Conversation[]>([])
 
-const samplePrompts = ['鱼体表白点', '鳃部发红', '鱼群浮头']
 const markdown = new MarkdownIt({
     html: false,
     breaks: true,
@@ -124,13 +124,21 @@ const userNickname = computed(() => authStore.nickname || authStore.username || 
 const userUsername = computed(() => (authStore.username ? `@${authStore.username}` : '@fish-med-user'))
 const userInitial = computed(() => Array.from(userNickname.value.trim() || authStore.username.trim() || 'F')[0]?.toUpperCase() ?? 'F')
 
-function toggleSidebar() {
+function toggleSidebar(event?: MouseEvent) {
+    ;(event?.currentTarget as HTMLElement | null)?.blur()
+
     if (window.matchMedia('(max-width: 900px)').matches) {
         sidebarOpen.value = !sidebarOpen.value
         return
     }
 
-    sidebarCollapsed.value = !sidebarCollapsed.value
+    const nextCollapsed = !sidebarCollapsed.value
+    sidebarCollapsed.value = nextCollapsed
+    suppressCollapsedBrandHover.value = nextCollapsed
+}
+
+function allowCollapsedBrandHover() {
+    suppressCollapsedBrandHover.value = false
 }
 
 async function loadCurrentUser() {
@@ -318,10 +326,6 @@ function createPendingConversation() {
 
     selectedConversationId.value = id
     return conversation
-}
-
-function choosePrompt(prompt: string) {
-    draftMessage.value = prompt
 }
 
 function handleMessageInputCompositionStart() {
@@ -904,12 +908,15 @@ onBeforeUnmount(() => {
         </div>
 
         <aside class="conversation-sidebar" aria-label="会话列表">
-            <div class="sidebar-brand">
+            <div class="sidebar-brand" :class="{ 'sidebar-brand--suppress-hover': suppressCollapsedBrandHover }" @mouseleave="allowCollapsedBrandHover">
                 <img class="sidebar-brand__logo" src="/images/fish-med-agent-logo.svg" alt="Fish Med Agent 图标" />
                 <div class="sidebar-brand__text">
                     <strong>Fish Med Agent</strong>
                     <span>鱼病问诊助手</span>
                 </div>
+                <button class="sidebar-toggle-button" type="button" aria-label="切换边栏" title="切换边栏" @click="toggleSidebar($event)">
+                    <PanelLeft :size="20" stroke-width="2" />
+                </button>
             </div>
 
             <button class="new-chat-button" type="button" @click="createConversation">
@@ -967,12 +974,8 @@ onBeforeUnmount(() => {
             </section>
         </aside>
 
-        <main class="chat-workspace">
-            <header class="chat-header">
-                <button class="mobile-menu-button" type="button" aria-label="切换会话列表" @click="toggleSidebar">
-                    <PanelLeft :size="20" stroke-width="2" />
-                </button>
-
+        <main class="chat-workspace" :class="{ 'chat-workspace--empty': activeMessages.length === 0 }">
+            <header v-if="activeMessages.length > 0" class="chat-header">
                 <div class="chat-header__title-block">
                     <p class="chat-header__eyebrow">鱼病问诊</p>
                     <h1>{{ activeConversationTitle }}</h1>
@@ -1027,63 +1030,55 @@ onBeforeUnmount(() => {
                     </article>
                 </div>
 
-                <div v-else class="empty-state">
-                    <div class="empty-state__mark" aria-hidden="true">
-                        <MessageCircle :size="24" stroke-width="1.8" />
-                    </div>
-                    <h2>新的鱼病问诊</h2>
-                    <div class="prompt-row" aria-label="症状示例">
-                        <button v-for="prompt in samplePrompts" :key="prompt" type="button" @click="choosePrompt(prompt)">
-                            {{ prompt }}
-                        </button>
-                    </div>
-                </div>
             </section>
 
-            <footer class="composer-area">
-                <div v-if="pendingAttachments.length" class="pending-files" aria-label="待发送附件">
-                    <div
-                        v-for="attachment in pendingAttachments"
-                        :key="attachment.id"
-                        class="pending-file"
-                        :class="{
-                            'pending-file--uploading': attachment.status === 'pending' || attachment.status === 'uploading',
-                            'pending-file--deleting': attachment.status === 'deleting',
-                        }">
-                        <div class="pending-file__preview">
-                            <img v-if="attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" />
-                            <FileImage v-else :size="18" stroke-width="2" />
-                            <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
-                            <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
-                                <X :size="14" stroke-width="2.4" />
-                            </button>
+            <footer class="composer-area" :class="{ 'composer-area--centered': activeMessages.length === 0 }">
+                <p v-if="activeMessages.length === 0" class="composer-ready-copy">准备好了，随时开始鱼病问诊</p>
+                <div class="composer-shell">
+                    <div v-if="pendingAttachments.length" class="pending-files" aria-label="待发送附件">
+                        <div
+                            v-for="attachment in pendingAttachments"
+                            :key="attachment.id"
+                            class="pending-file"
+                            :class="{
+                                'pending-file--uploading': attachment.status === 'pending' || attachment.status === 'uploading',
+                                'pending-file--deleting': attachment.status === 'deleting',
+                            }">
+                            <div class="pending-file__preview">
+                                <img v-if="attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" />
+                                <FileImage v-else :size="18" stroke-width="2" />
+                                <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
+                                <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
+                                    <X :size="14" stroke-width="2.4" />
+                                </button>
+                            </div>
                         </div>
                     </div>
+
+                    <form class="composer" @submit.prevent="sendMessage">
+                        <button class="composer-icon-button" type="button" aria-label="语音输入">
+                            <Mic :size="19" stroke-width="2" />
+                        </button>
+
+                        <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="上传图片" @click="openFilePicker">
+                            <FileImage :size="19" stroke-width="2" />
+                        </button>
+
+                        <textarea
+                            v-model="draftMessage"
+                            rows="1"
+                            placeholder="输入鱼种、症状、水温、发病时长..."
+                            @compositionstart="handleMessageInputCompositionStart"
+                            @compositionend="handleMessageInputCompositionEnd"
+                            @keydown="handleMessageInputKeydown"></textarea>
+
+                        <button class="send-button" type="submit" :disabled="!canSend" aria-label="发送">
+                            <SendHorizontal :size="19" stroke-width="2.2" />
+                        </button>
+
+                        <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple :disabled="imagesBusy || responseGenerating" @change="handleFileChange" />
+                    </form>
                 </div>
-
-                <form class="composer" @submit.prevent="sendMessage">
-                    <button class="composer-icon-button" type="button" aria-label="语音输入">
-                        <Mic :size="19" stroke-width="2" />
-                    </button>
-
-                    <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="上传图片" @click="openFilePicker">
-                        <FileImage :size="19" stroke-width="2" />
-                    </button>
-
-                    <textarea
-                        v-model="draftMessage"
-                        rows="1"
-                        placeholder="输入鱼种、症状、水温、发病时长..."
-                        @compositionstart="handleMessageInputCompositionStart"
-                        @compositionend="handleMessageInputCompositionEnd"
-                        @keydown="handleMessageInputKeydown"></textarea>
-
-                    <button class="send-button" type="submit" :disabled="!canSend" aria-label="发送">
-                        <SendHorizontal :size="19" stroke-width="2.2" />
-                    </button>
-
-                    <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple :disabled="imagesBusy || responseGenerating" @change="handleFileChange" />
-                </form>
             </footer>
         </main>
     </div>
@@ -1443,7 +1438,9 @@ textarea:focus-visible {
 }
 
 .sidebar-brand {
+    position: relative;
     display: flex;
+    width: 100%;
     height: 50px;
     flex: 0 0 50px;
     align-items: center;
@@ -1451,7 +1448,10 @@ textarea:focus-visible {
     overflow: hidden;
     border: 1px solid transparent;
     border-radius: var(--radius);
+    background: transparent;
+    color: inherit;
     padding: 6px 6px 10px 11px;
+    text-align: left;
 }
 
 .sidebar-brand__logo {
@@ -1459,15 +1459,44 @@ textarea:focus-visible {
     height: 34px;
     flex: 0 0 auto;
     object-fit: contain;
+    transition: opacity 120ms ease;
 }
 
 .sidebar-brand__text {
     display: grid;
     min-width: 0;
+    flex: 1;
     gap: 2px;
     transition:
         opacity 100ms ease,
         transform 140ms ease;
+}
+
+.sidebar-toggle-button {
+    display: inline-flex;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: calc(var(--radius) - 4px);
+    background: transparent;
+    color: var(--muted-foreground);
+    transition:
+        background-color 160ms ease,
+        color 160ms ease,
+        transform 160ms ease;
+}
+
+.sidebar-toggle-button:hover,
+.sidebar-toggle-button:focus-visible {
+    background: rgba(14, 127, 176, 0.1);
+    color: var(--ocean-blue);
+}
+
+.sidebar-toggle-button:active {
+    transform: scale(0.96);
 }
 
 .sidebar-brand__text strong {
@@ -1609,6 +1638,26 @@ textarea:focus-visible {
 .home-shell--sidebar-collapsed .sidebar-brand__logo {
     width: 34px;
     height: 34px;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand .sidebar-toggle-button {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    display: inline-flex;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand:not(.sidebar-brand--suppress-hover):hover .sidebar-brand__logo {
+    opacity: 0;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand:not(.sidebar-brand--suppress-hover):hover .sidebar-toggle-button {
+    background: rgba(14, 127, 176, 0.1);
+    color: var(--ocean-blue);
+    opacity: 1;
+    pointer-events: auto;
 }
 
 .home-shell--sidebar-collapsed .sidebar-brand__text,
@@ -1842,6 +1891,10 @@ textarea:focus-visible {
     grid-template-rows: 65px minmax(0, 1fr);
     overflow: hidden;
     background: var(--background);
+}
+
+.chat-workspace--empty {
+    grid-template-rows: minmax(0, 1fr);
 }
 
 .chat-workspace::after {
@@ -2255,63 +2308,6 @@ textarea:focus-visible {
     line-height: 1.45;
 }
 
-.empty-state {
-    display: grid;
-    width: min(520px, calc(100% - 32px));
-    min-height: 100%;
-    place-items: center;
-    align-content: center;
-    gap: 16px;
-    margin: 0 auto;
-    padding: 24px 24px 180px;
-    text-align: center;
-}
-
-.empty-state__mark {
-    display: inline-flex;
-    width: 54px;
-    height: 54px;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--card);
-    box-shadow: var(--shadow-sm);
-    color: var(--foreground);
-}
-
-.empty-state h2 {
-    margin: 0;
-    color: var(--foreground);
-    font-size: 26px;
-    font-weight: 400;
-    line-height: 1.15;
-}
-
-.prompt-row {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-}
-
-.prompt-row button {
-    min-height: 34px;
-    border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 2px);
-    background: var(--background);
-    color: var(--foreground);
-    padding: 0 12px;
-    box-shadow: var(--shadow-sm);
-    font-size: 14px;
-    font-weight: 400;
-    line-height: 1.25;
-}
-
-.prompt-row button:hover {
-    background: var(--accent);
-}
-
 .composer-area {
     position: absolute;
     right: 50%;
@@ -2320,6 +2316,11 @@ textarea:focus-visible {
     width: min(920px, calc(100% - 32px));
     transform: translateX(50%);
     z-index: 2;
+    gap: 30px;
+}
+
+.composer-shell {
+    display: grid;
     gap: 10px;
     border: 1px solid rgba(14, 127, 176, 0.46);
     border-radius: 20px;
@@ -2333,7 +2334,22 @@ textarea:focus-visible {
     backdrop-filter: blur(12px);
 }
 
-.composer-area:focus-within {
+.composer-area--centered {
+    top: 50%;
+    bottom: auto;
+    transform: translate(50%, -50%);
+}
+
+.composer-ready-copy {
+    margin: 0;
+    color: var(--foreground);
+    font-size: clamp(20px, 2.4vw, 28px);
+    font-weight: 400;
+    line-height: 1.2;
+    text-align: center;
+}
+
+.composer-area:focus-within .composer-shell {
     border-color: var(--ocean-blue);
     box-shadow:
         var(--shadow-lg),
@@ -2362,7 +2378,7 @@ textarea:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .composer-area {
+    .composer-shell {
         animation: none;
     }
 
@@ -2647,6 +2663,7 @@ textarea:focus-visible {
         display: grid;
     }
 
+    .home-shell--sidebar-collapsed .sidebar-toggle-button,
     .home-shell--sidebar-collapsed .sidebar-user-panel__logout {
         display: inline-flex;
     }
@@ -2669,6 +2686,10 @@ textarea:focus-visible {
         --message-bottom-cover-height: 104px;
         --message-scrollbar-gutter: 14px;
         grid-template-rows: 58px minmax(0, 1fr);
+    }
+
+    .chat-workspace--empty {
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .chat-header h1 {
@@ -2697,19 +2718,19 @@ textarea:focus-visible {
         grid-template-columns: 1fr;
     }
 
-    .empty-state h2 {
-        font-size: 28px;
-    }
-
-    .empty-state {
-        padding: 20px 20px 170px;
-    }
-
     .composer-area {
         bottom: max(12px, env(safe-area-inset-bottom));
         width: calc(100% - 20px);
+    }
+
+    .composer-shell {
         border-radius: 22px;
         padding: 9px;
+    }
+
+    .composer-area--centered {
+        top: 50%;
+        bottom: auto;
     }
 
     .composer {
