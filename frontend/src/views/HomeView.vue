@@ -1832,7 +1832,8 @@ textarea:focus-visible {
 }
 
 .chat-workspace {
-    --message-scroll-mask-height: 86px;
+    --message-bottom-cover-height: 126px;
+    --message-scrollbar-gutter: 18px;
     position: relative;
     display: grid;
     min-width: 0;
@@ -1845,11 +1846,11 @@ textarea:focus-visible {
 
 .chat-workspace::after {
     position: absolute;
-    right: 0;
+    right: var(--message-scrollbar-gutter);
     bottom: 0;
     left: 0;
     z-index: 1;
-    height: var(--message-scroll-mask-height);
+    height: var(--message-bottom-cover-height);
     background: var(--background);
     content: '';
     pointer-events: none;
@@ -2668,7 +2669,8 @@ textarea:focus-visible {
 
 @media (max-width: 640px) {
     .chat-workspace {
-        --message-scroll-mask-height: 72px;
+        --message-bottom-cover-height: 104px;
+        --message-scrollbar-gutter: 14px;
         grid-template-rows: 58px minmax(0, 1fr);
     }
 
