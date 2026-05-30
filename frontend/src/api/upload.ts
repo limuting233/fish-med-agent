@@ -6,10 +6,17 @@ export type UploadedImage = {
     extension: string
     size: number
     original_filename: string | null
+    url?: string
+    url_expires_at?: number
 }
 
 export type DeleteImageData = {
     object_key: string
+}
+
+export type PresignImagesData = {
+    urls: Record<string, string>
+    expires_at: number
 }
 
 export function uploadImage(file: File): Promise<UploadedImage> {
@@ -18,6 +25,12 @@ export function uploadImage(file: File): Promise<UploadedImage> {
     formData.append('file', file)
 
     return http.uploadForm<UploadedImage>('/upload/image', formData)
+}
+
+export function presignImages(objectKeys: string[]): Promise<PresignImagesData> {
+    return http.post<PresignImagesData>('/upload/image/presign', {
+        object_keys: objectKeys,
+    })
 }
 
 export function deleteImage(objectKey: string): Promise<DeleteImageData> {

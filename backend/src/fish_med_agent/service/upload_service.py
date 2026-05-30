@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -36,7 +37,73 @@ class UploadService:
 
     _KEY_PREFIX = "images/"  # 删除时只允许操作图片目录下的 key
 
+    # presigned URL 的默认有效期：1 小时
+    # 与 access_token 时长一致，简化前端心智（token 失效时也该刷一下图）
+    PRESIGN_EXPIRES_IN = 3600  # 秒，用于传给 boto3 的 ExpiresIn 参数
+
     _bucket_ensured = False
+
+    def _compute_expires_at_ms(self) -> int:
+        """计算"从现在起再过 PRESIGN_EXPIRES_IN 秒"的 UTC epoch 毫秒时间戳。
+
+        前端拿到这个绝对时间戳后可以直接比较 Date.now()，不用额外算偏移。
+        务必在签名之前调用，保证返回的时间戳不晚于 URL 实际过期点。
+        """
+        return int(time.time() * 1000) + self.PRESIGN_EXPIRES_IN * 1000
+
+    def _is_valid_object_key(self, object_key: str) -> bool:
+        """object_key 合法性校验：非空 + 不含路径穿越 + 必须在 images/ 目录下。"""
+        return (
+            bool(object_key)
+            and ".." not in object_key
+            and object_key.startswith(self._KEY_PREFIX)
+        )
+
+    async def _presign_get(self, s3, object_key: str) -> str:
+        """生成单个 GET 操作的 presigned URL。
+
+        boto3 的 generate_presigned_url 是纯计算（只算签名，不打网络），
+        所以这里 await 只是为了拿到底层签名器的协程包装。
+        """
+        return await s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": settings.MINIO_BUCKET, "Key": object_key},
+            ExpiresIn=self.PRESIGN_EXPIRES_IN,
+        )
+
+    async def generate_presigned_urls(
+        self, object_keys: list[str]
+    ) -> tuple[dict[str, str], int]:
+        """批量为已有 object_key 生成 presigned URL。
+
+        - 在一个 s3 client context 内循环签名，避免重复开 client 的开销
+        - 非法 key（不在 images/ 目录）静默从结果中省略，前端按缺失处理
+        - **不调 head_object 检查存在性**，节省一轮 RTT；图片若已被删，
+          前端 <img onerror> 兜底显示占位
+
+        Args:
+            object_keys: 待签名的 key 列表
+
+        Returns:
+            (urls dict, expires_at_ms) —— expires_at_ms 是统一的 UTC 毫秒时间戳
+            （取批量开始前一刻作为基准，保证不晚于任一 URL 的实际过期点）
+        """
+        # 必须在签第一个 URL 之前算 expires_at，确保它 ≤ 所有 URL 的实际过期点
+        expires_at_ms = self._compute_expires_at_ms()
+
+        urls: dict[str, str] = {}
+        valid_keys = [k.strip() for k in object_keys if self._is_valid_object_key(k.strip())]
+        if not valid_keys:
+            return urls, expires_at_ms
+
+        async with get_s3_client() as s3:
+            for key in valid_keys:
+                try:
+                    urls[key] = await self._presign_get(s3, key)
+                except (BotoCoreError, ClientError):
+                    # 单个 key 签名失败不影响其它；继续
+                    logger.exception(f"presign failed for {key!r}")
+        return urls, expires_at_ms
 
     async def delete_image(self, user_id: int, object_key: str) -> str:
         """
@@ -56,7 +123,7 @@ class UploadService:
         """
         key = object_key.strip()
         # 限定只能删 images/ 前缀下的对象，防止越权删 bucket 里其它命名空间
-        if not key or ".." in key or not key.startswith(self._KEY_PREFIX):
+        if not self._is_valid_object_key(key):
             logger.debug(f"delete rejected: invalid object_key {key!r}")
             raise InvalidObjectKeyError()
 
@@ -79,6 +146,42 @@ class UploadService:
 
         logger.info(f"user {user_id} deleted image: {key}")
         return key
+
+    async def fetch_image_bytes(self, object_key: str) -> tuple[bytes, str]:
+        """按 object_key 从 MinIO 读出图片字节流。
+
+        供 VisionService 把图片转成 base64 内联给 vision 模型时使用。
+
+        Args:
+            object_key: 上传接口返回的 key（必须在 images/ 目录下）
+
+        Returns:
+            (bytes, content_type) 元组
+
+        Raises:
+            InvalidObjectKeyError: key 为空 / 含路径穿越 / 不在 images/ 下
+            ImageNotFoundError: 对象不存在
+            botocore ClientError: 其它 MinIO 通信错误，由调用方决定降级策略
+        """
+        key = object_key.strip()
+        if not self._is_valid_object_key(key):
+            logger.debug(f"fetch rejected: invalid object_key {key!r}")
+            raise InvalidObjectKeyError()
+
+        async with get_s3_client() as s3:
+            try:
+                obj = await s3.get_object(Bucket=settings.MINIO_BUCKET, Key=key)
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    raise ImageNotFoundError()
+                logger.exception(f"get_object failed for key={key!r}")
+                raise
+
+            content_type = obj.get("ContentType") or "application/octet-stream"
+            # StreamingBody，必须 await read 拿全部字节
+            body = await obj["Body"].read()
+            return body, content_type
 
     async def upload_image(
             self, user_id: int, file: UploadFile
@@ -118,6 +221,10 @@ class UploadService:
                     Body=data,
                     ContentType=mime,
                 )
+                # 必须在签名前算 expires_at，保证它 ≤ URL 的实际过期点
+                expires_at_ms = self._compute_expires_at_ms()
+                # 复用同一个 client 顺手把展示用 URL 签出来，省前端一次 RTT
+                presigned_url = await self._presign_get(s3, object_key)
         except (BotoCoreError, ClientError):
             logger.exception("put_object to MinIO failed")
             raise UploadFailedError()
@@ -129,6 +236,8 @@ class UploadService:
             extension=ext,
             size=size,
             original_filename=file.filename,
+            url=presigned_url,
+            url_expires_at=expires_at_ms,
         )
 
     async def _read_with_limit(self, file: UploadFile) -> bytes:

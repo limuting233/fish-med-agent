@@ -15,6 +15,8 @@ export type MessageImage = {
     extension?: string
     size?: number
     original_filename?: string | null
+    url?: string
+    url_expires_at?: number
     previewUrl?: string
     name?: string
 }

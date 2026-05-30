@@ -12,7 +12,8 @@ from fish_med_agent.core.config import settings
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.models import Conversation
 from fish_med_agent.repositories.conversation_repo import ConversationRepo
-from fish_med_agent.schemas.chat import ChatRequest
+from fish_med_agent.schemas.chat import ChatRequest, ImageInput
+from fish_med_agent.service.vision_service import vision_service
 
 logger = get_logger(__name__)
 
@@ -64,15 +65,42 @@ class ChatService:
             )
             exist_conversation = await self._conversation_repo.add(new_conversation)
 
-        # 追加本轮用户消息；用 + 拼新 list 以触发 SQLAlchemy dirty 检测
-        messages = exist_conversation.messages + [
-            {"role": "user", "content": message.content, "created": now}
-        ]
-
-        logger.info(f"chat start: conv={exist_conversation.id} history_len={len(messages)}")
+        logger.info(
+            f"chat start: conv={exist_conversation.id} "
+            f"images={len(message.images or [])}"
+        )
 
         try:
             yield _sse(event="start")
+
+            # 前置 transform：若带图，先调 vision 把图转中文描述拼进 content
+            # —— 后续 tool-use 循环里 DeepSeek 只看到融合后的纯文本
+            user_content = message.content
+            if message.images:
+                yield _sse(
+                    event="vision.start",
+                    data={"count": len(message.images)},
+                )
+                descriptions = await vision_service.describe_images(message.images)
+                user_content = _merge_image_descriptions(
+                    message.content, message.images, descriptions
+                )
+                yield _sse(
+                    event="vision.done",
+                    data={"count": len(message.images)},
+                )
+
+            # 追加本轮用户消息；用 + 拼新 list 以触发 SQLAlchemy dirty 检测
+            user_msg: dict[str, Any] = {
+                "role": "user",
+                "content": user_content,
+                "created": now,
+            }
+            if message.images:
+                # 原始图片元数据单独存，便于前端回放原图
+                user_msg["images"] = [img.model_dump() for img in message.images]
+            messages = exist_conversation.messages + [user_msg]
+            logger.info(f"history_len after user msg appended: {len(messages)}")
 
             for iteration in range(_MAX_TOOL_ITERATIONS):
                 logger.info(f"tool-use iteration {iteration + 1}/{_MAX_TOOL_ITERATIONS}")
@@ -237,12 +265,41 @@ def _build_rag_history(
     return clean[-2 * max_turns:]
 
 
+_NON_LLM_FIELDS = {"created", "images"}
+
+
 def _strip_message(msg: dict[str, Any]) -> dict[str, Any]:
-    """从存储的消息里剔除 LLM 不需要的字段（如 created）。
+    """从存储的消息里剔除 LLM 不需要的字段（如 created / images）。
 
     保留 role / content / tool_calls / tool_call_id 等 OpenAI 协议字段。
+    `images` 是我们自己持久化用的元数据，DeepSeek 不认，必须剥掉；
+    图片相关信息已经在拼 content 时由 vision 描述合并进去了。
     """
-    return {k: v for k, v in msg.items() if k != "created"}
+    return {k: v for k, v in msg.items() if k not in _NON_LLM_FIELDS}
+
+
+def _merge_image_descriptions(
+    text: str, images: list[ImageInput], descriptions: list[str]
+) -> str:
+    """把 vision 转出来的图片描述拼到用户原文后面。
+
+    格式：
+        <原文>
+
+        [用户附图]
+        图1 (gill.jpg)：xxx
+        图2：xxx
+
+    描述列表与 images 一一对应；描述若为 "[图片识别失败：...]" 也会照样拼进去，
+    让 DeepSeek 感知到"有图但识别失败"，必要时引导用户文字补充。
+    """
+    if not images:
+        return text
+    lines = ["[用户附图]"]
+    for i, (img, desc) in enumerate(zip(images, descriptions), start=1):
+        name_tag = f" ({img.original_filename})" if img.original_filename else ""
+        lines.append(f"图{i}{name_tag}：{desc}")
+    return f"{text}\n\n" + "\n".join(lines)
 
 
 def _accumulate_tool_call(buf: dict[int, dict[str, Any]], tc_delta: Any) -> None:

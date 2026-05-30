@@ -6,8 +6,9 @@ import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { getCurrentUserRequest } from '@/api/auth'
 import { fetchConversationList, type Conversation, type ConversationMessage, type MessageImage } from '@/api/conversation'
-import { deleteImage, uploadImage, type UploadedImage } from '@/api/upload'
+import { deleteImage, presignImages, uploadImage, type UploadedImage } from '@/api/upload'
 import { useAuthStore } from '@/stores/auth'
+import { RequestError } from '@/utils/request'
 import { streamChat, type StreamEvent, type StreamSession } from '@/utils/stream'
 
 type ConversationGroup = 'today' | 'week' | 'earlier'
@@ -29,8 +30,14 @@ type MessageImageView = {
     id: string
     name: string
     previewUrl?: string
+    url?: string
     objectKey?: string
     size?: number
+}
+
+type ImagePreviewState = {
+    src: string
+    alt: string
 }
 
 type DisplayConversationMessage = ConversationMessage & {
@@ -94,6 +101,11 @@ type AssistantMessagePart =
       }
 
 const MAX_IMAGE_ATTACHMENTS = 6
+const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+const PRESIGN_BATCH_SIZE = 50
+const PRESIGN_REFRESH_WINDOW_MS = 60 * 1000
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif'])
 const HOME_SELECTED_CONVERSATION_SESSION_KEY = 'fish-med-agent:selected-conversation-id'
 const HOME_SIDEBAR_COLLAPSED_SESSION_KEY = 'fish-med-agent:sidebar-collapsed'
 
@@ -135,10 +147,12 @@ const messagePane = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<Attachment[]>([])
 const activeImageUploadCount = ref(0)
 const activeImageDeleteCount = ref(0)
+const failedMessageImageIds = ref<Set<string>>(new Set())
 const uploadQueue: Attachment[] = []
 let uploadQueueRunning = false
 const searchOpen = ref(false)
 const logoutDialogOpen = ref(false)
+const imagePreview = ref<ImagePreviewState | null>(null)
 const searchQuery = ref('')
 const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
@@ -264,13 +278,129 @@ async function loadCurrentUser() {
     }
 }
 
+function isSupportedImageFile(file: File) {
+    const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+    return SUPPORTED_IMAGE_MIME_TYPES.has(file.type) || SUPPORTED_IMAGE_EXTENSIONS.has(extension)
+}
+
+function hasFreshImageUrl(image: MessageImage) {
+    return Boolean(image.url && typeof image.url_expires_at === 'number' && Date.now() + PRESIGN_REFRESH_WINDOW_MS < image.url_expires_at)
+}
+
+function getImageObjectKey(image: string | MessageImage) {
+    return typeof image === 'string' ? image : image.object_key
+}
+
+function getImageUrl(image: string | MessageImage) {
+    return typeof image === 'string' ? undefined : image.previewUrl || (hasFreshImageUrl(image) ? image.url : undefined)
+}
+
+function getAttachmentPreviewSrc(attachment: Attachment) {
+    return attachment.uploadedImage?.url || attachment.previewUrl
+}
+
+function openImagePreview(src: string | undefined, alt = '图片') {
+    if (!src) {
+        return
+    }
+
+    imagePreview.value = {
+        src,
+        alt,
+    }
+}
+
+function closeImagePreview() {
+    imagePreview.value = null
+}
+
+function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && imagePreview.value) {
+        closeImagePreview()
+    }
+}
+
+function markMessageImageFailed(imageId: string) {
+    failedMessageImageIds.value = new Set(failedMessageImageIds.value).add(imageId)
+}
+
+async function hydrateConversationImageUrls(list: Conversation[]) {
+    const keys = new Set<string>()
+
+    list.forEach((conversation) => {
+        ;(conversation.messages ?? []).forEach((message) => {
+            ;(message.images ?? []).forEach((image) => {
+                const objectKey = getImageObjectKey(image)
+                if (!objectKey || getImageUrl(image)) {
+                    return
+                }
+
+                keys.add(objectKey)
+            })
+        })
+    })
+
+    if (!keys.size) {
+        return list
+    }
+
+    const urlByKey = new Map<string, string>()
+    const expiresAtByKey = new Map<string, number>()
+    const objectKeys = Array.from(keys)
+
+    try {
+        for (let index = 0; index < objectKeys.length; index += PRESIGN_BATCH_SIZE) {
+            const batch = objectKeys.slice(index, index + PRESIGN_BATCH_SIZE)
+            const data = await presignImages(batch)
+
+            Object.entries(data.urls).forEach(([objectKey, url]) => {
+                urlByKey.set(objectKey, url)
+                expiresAtByKey.set(objectKey, data.expires_at)
+            })
+        }
+    } catch {
+        return list
+    }
+
+    return list.map((conversation) => ({
+        ...conversation,
+        messages:
+            conversation.messages?.map((message) => ({
+                ...message,
+                images:
+                    message.images?.map((image) => {
+                        const objectKey = getImageObjectKey(image)
+                        const url = objectKey ? urlByKey.get(objectKey) : undefined
+
+                        if (!objectKey || !url) {
+                            return image
+                        }
+
+                        if (typeof image === 'string') {
+                            return {
+                                object_key: objectKey,
+                                url,
+                                url_expires_at: expiresAtByKey.get(objectKey),
+                            } satisfies MessageImage
+                        }
+
+                        return {
+                            ...image,
+                            url,
+                            url_expires_at: expiresAtByKey.get(objectKey),
+                        }
+                    }) ?? message.images,
+            })) ?? conversation.messages,
+    }))
+}
+
 async function loadConversationList() {
     conversationListLoading.value = true
     conversationListError.value = ''
 
     try {
         const list = await fetchConversationList()
-        conversations.value = list
+        conversations.value = await hydrateConversationImageUrls(list)
 
         if (selectedConversationId.value !== 0) {
             const selectedExists = conversations.value.some((conversation) => conversation.id === selectedConversationId.value)
@@ -759,11 +889,15 @@ function openFilePicker() {
 function handleFileChange(event: Event) {
     const input = event.target as HTMLInputElement
     const selectedFiles = Array.from(input.files ?? [])
-    const imageFiles = selectedFiles.filter((file) => file.type.startsWith('image/'))
+    const imageFiles = selectedFiles.filter((file) => isSupportedImageFile(file) && file.size <= MAX_IMAGE_SIZE_BYTES)
     const availableSlots = Math.max(0, MAX_IMAGE_ATTACHMENTS - pendingAttachments.value.length)
 
-    if (imageFiles.length < selectedFiles.length) {
-        toast.warning('只能上传图片文件')
+    if (selectedFiles.some((file) => !isSupportedImageFile(file))) {
+        toast.warning('仅支持 jpg/png/webp/gif 图片')
+    }
+
+    if (selectedFiles.some((file) => isSupportedImageFile(file) && file.size > MAX_IMAGE_SIZE_BYTES)) {
+        toast.warning('单张图片最大 10MB')
     }
 
     if (imageFiles.length > availableSlots) {
@@ -808,6 +942,11 @@ async function removePendingAttachment(attachmentId: string) {
         await deleteImage(attachment.objectKey)
         removePendingAttachmentLocally(attachment)
     } catch (error) {
+        if (error instanceof RequestError && error.code === 404002) {
+            removePendingAttachmentLocally(attachment)
+            return
+        }
+
         const message = error instanceof Error ? error.message : '图片删除失败'
         toast.error(message || '图片删除失败')
         updatePendingAttachment(attachment.id, {
@@ -938,6 +1077,8 @@ function createMessageImages(attachments: Attachment[], uploadedImages: Uploaded
             extension: uploadedImage?.extension,
             size: uploadedImage?.size ?? attachment.file.size,
             original_filename: uploadedImage?.original_filename ?? attachment.name,
+            url: uploadedImage?.url,
+            url_expires_at: uploadedImage?.url_expires_at,
             previewUrl: attachment.previewUrl,
             name: attachment.name,
         }
@@ -959,6 +1100,7 @@ function getMessageImages(message: ConversationMessage): MessageImageView[] {
             id: `${message.created}-image-${index}`,
             name: image.name || image.original_filename || objectKey?.split('/').pop() || '图片',
             previewUrl: image.previewUrl,
+            url: getImageUrl(image),
             objectKey,
             size: image.size,
         }
@@ -1294,11 +1436,13 @@ watch(
 )
 
 onMounted(() => {
+    window.addEventListener('keydown', handleWindowKeydown)
     void loadCurrentUser()
     void loadConversationList()
 })
 
 onBeforeUnmount(() => {
+    window.removeEventListener('keydown', handleWindowKeydown)
     abortActiveStream()
     clearPendingAttachments()
     revokeConversationPreviewUrls()
@@ -1357,6 +1501,15 @@ onBeforeUnmount(() => {
                     <button class="logout-dialog__button logout-dialog__button--secondary" type="button" @click="closeLogoutDialog">取消</button>
                     <button class="logout-dialog__button logout-dialog__button--primary" type="button" @click="confirmLogout">退出登录</button>
                 </div>
+            </section>
+        </div>
+
+        <div v-if="imagePreview" class="image-preview-layer" role="presentation" @click="closeImagePreview">
+            <section class="image-preview-dialog" role="dialog" aria-modal="true" aria-label="图片预览" @click.stop>
+                <button class="image-preview-close" type="button" aria-label="关闭图片预览" @click="closeImagePreview">
+                    <X :size="20" stroke-width="2.4" />
+                </button>
+                <img :src="imagePreview.src" :alt="imagePreview.alt" />
             </section>
         </div>
 
@@ -1470,7 +1623,12 @@ onBeforeUnmount(() => {
                                 ]"
                                 aria-label="已发送图片">
                                 <div v-for="image in getMessageImages(message)" :key="image.id" class="message-attachment">
-                                    <img v-if="image.previewUrl" :src="image.previewUrl" :alt="image.name" />
+                                    <img
+                                        v-if="(image.previewUrl || image.url) && !failedMessageImageIds.has(image.id)"
+                                        :src="image.previewUrl || image.url"
+                                        :alt="image.name"
+                                        @click="openImagePreview(image.previewUrl || image.url, image.name)"
+                                        @error="markMessageImageFailed(image.id)" />
                                     <FileImage v-else :size="24" stroke-width="1.8" />
                                 </div>
                             </div>
@@ -1536,7 +1694,11 @@ onBeforeUnmount(() => {
                                 'pending-file--deleting': attachment.status === 'deleting',
                             }">
                             <div class="pending-file__preview">
-                                <img v-if="attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" />
+                                <img
+                                    v-if="getAttachmentPreviewSrc(attachment)"
+                                    :src="getAttachmentPreviewSrc(attachment)"
+                                    :alt="attachment.name"
+                                    @click="openImagePreview(getAttachmentPreviewSrc(attachment), attachment.name)" />
                                 <FileImage v-else :size="18" stroke-width="2" />
                                 <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
                                 <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
@@ -1568,7 +1730,14 @@ onBeforeUnmount(() => {
                             <SendHorizontal v-else :size="19" stroke-width="2.2" />
                         </button>
 
-                        <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple :disabled="imagesBusy || responseGenerating" @change="handleFileChange" />
+                        <input
+                            ref="fileInput"
+                            class="file-input"
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                            multiple
+                            :disabled="imagesBusy || responseGenerating"
+                            @change="handleFileChange" />
                     </form>
                 </div>
             </footer>
@@ -1897,6 +2066,54 @@ textarea:focus-visible {
 
 .logout-dialog__button--primary:hover {
     background: var(--ocean-blue-hover);
+}
+
+.image-preview-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    display: grid;
+    place-items: center;
+    background: rgba(9, 9, 11, 0.82);
+    backdrop-filter: blur(8px);
+    padding: 22px;
+}
+
+.image-preview-dialog {
+    position: relative;
+    display: grid;
+    width: min(100%, 1120px);
+    height: min(100%, 820px);
+    place-items: center;
+}
+
+.image-preview-dialog img {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: calc(var(--radius) - 2px);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+    object-fit: contain;
+}
+
+.image-preview-close {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 1;
+    display: inline-flex;
+    width: 38px;
+    height: 38px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.94);
+    color: var(--foreground);
+    box-shadow: var(--shadow-md);
+}
+
+.image-preview-close:hover {
+    background: var(--background);
 }
 
 .search-dialog__empty button,
@@ -2876,6 +3093,7 @@ textarea:focus-visible {
 .message-attachment img {
     width: 100%;
     height: 100%;
+    cursor: zoom-in;
     object-fit: cover;
 }
 
@@ -3062,6 +3280,7 @@ textarea:focus-visible {
 .pending-file__preview img {
     width: 100%;
     height: 100%;
+    cursor: zoom-in;
     object-fit: cover;
 }
 

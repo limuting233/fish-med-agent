@@ -7,6 +7,8 @@ export type ChatStreamImageInput = {
     extension: string
     size: number
     original_filename?: string | null
+    url?: string
+    url_expires_at?: number
 }
 
 export type ChatStreamRequest = {
@@ -159,6 +161,8 @@ export function streamChat(
             requestHeaders.set('Authorization', `Bearer ${accessToken}`)
         }
 
+        let streamErrorDispatched = false
+
         try {
             const response = await fetch(buildStreamUrl(endpoint), {
                 method: 'POST',
@@ -221,10 +225,12 @@ export function streamChat(
                         }
 
                         if (event.event === 'error') {
-                            const streamError = new RequestError('Stream error event received', {
+                            const data = event.data as { message?: string } | null
+                            const streamError = new RequestError(data?.message || 'Stream error event received', {
                                 status: 0,
                                 data: event.data,
                             })
+                            streamErrorDispatched = true
                             handlers.onError?.(streamError, event)
                             throw streamError
                         }
@@ -248,6 +254,17 @@ export function streamChat(
                 if (event.event === 'done') {
                     handlers.onDone?.(event)
                 }
+
+                if (event.event === 'error') {
+                    const data = event.data as { message?: string } | null
+                    const streamError = new RequestError(data?.message || 'Stream error event received', {
+                        status: 0,
+                        data: event.data,
+                    })
+                    streamErrorDispatched = true
+                    handlers.onError?.(streamError, event)
+                    throw streamError
+                }
             }
 
             handlers.onClose?.()
@@ -262,7 +279,9 @@ export function streamChat(
                     ? error
                     : new RequestError(error instanceof Error ? error.message : 'Stream request failed', { status: 0 })
 
-            handlers.onError?.(streamError)
+            if (!streamErrorDispatched) {
+                handlers.onError?.(streamError)
+            }
             throw streamError
         }
     })()

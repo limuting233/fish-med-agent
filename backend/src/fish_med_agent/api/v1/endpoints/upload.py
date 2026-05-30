@@ -6,6 +6,8 @@ from fish_med_agent.schemas.response import ApiResponse, success_response
 from fish_med_agent.schemas.upload import (
     DeleteImageRequest,
     DeleteImageResponse,
+    PresignRequest,
+    PresignResponse,
     UploadImageResponse,
 )
 from fish_med_agent.service.upload_service import UploadService
@@ -39,6 +41,37 @@ async def upload_image(
     return success_response(
         request_id=request_id,
         data=response,
+    )
+
+
+@router.post("/image/presign", response_model=ApiResponse[PresignResponse])
+async def presign_image_urls(
+        http_request: Request,
+        body: PresignRequest,
+        current_user_id: int = Depends(get_current_user_id),
+):
+    """
+    批量为已有 object_key 生成 presigned URL，供历史会话回显图片用。
+
+    - object_keys：上传接口返回过的 key 列表，最多 50 个
+    - 非法 key（不在 images/ 目录下）会从结果中省略，前端按缺失处理
+    - **不校验对象是否存在**：节省一轮 RTT；图片若已被删，前端 <img onerror> 兜底
+    - URL 默认有效期 1 小时（与 access_token 同步）
+
+    Returns:
+        PresignResponse:
+            urls: dict[object_key, url]
+            expires_in: URL 有效秒数
+    """
+    request_id = getattr(http_request.state, "request_id")
+    upload_service = UploadService()
+    urls, expires_at = await upload_service.generate_presigned_urls(body.object_keys)
+    logger.info(
+        f"user {current_user_id} presigned {len(urls)}/{len(body.object_keys)} keys"
+    )
+    return success_response(
+        request_id=request_id,
+        data=PresignResponse(urls=urls, expires_at=expires_at),
     )
 
 

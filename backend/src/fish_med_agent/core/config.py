@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     DEEPSEEK_TEMPERATURE: float
     DEEPSEEK_TIMEOUT: float
 
+    # MiMo 视觉模型配置（用于图片 → 文字描述的前置 transform）
+    MIMO_BASE_URL: str
+    MIMO_API_KEY: str
+    MIMO_MODEL: str
+    MIMO_TIMEOUT: float = 30.0
+
     # JWT配置
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str
