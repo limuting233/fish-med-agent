@@ -1609,11 +1609,6 @@ onBeforeUnmount(() => {
                         </div>
 
                         <div class="chat-message__content">
-                            <div class="chat-message__meta">
-                                <span v-if="message.role === 'assistant'">Fish Med Agent</span>
-                                <time>{{ formatMessageTime(message.created) }}</time>
-                            </div>
-
                             <div
                                 v-if="message.role === 'user' && message.images?.length"
                                 class="message-attachments"
