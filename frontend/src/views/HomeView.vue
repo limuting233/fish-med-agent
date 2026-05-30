@@ -2656,6 +2656,14 @@ textarea:focus-visible {
     padding: 10px;
 }
 
+.tool-call-panel--error .tool-call-panel__body {
+    border-top-color: rgba(220, 38, 38, 0.18);
+}
+
+.tool-call-panel--success .tool-call-panel__body {
+    border-top-color: rgba(22, 163, 74, 0.18);
+}
+
 .tool-call-panel__body section {
     display: grid;
     gap: 5px;
