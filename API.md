@@ -66,20 +66,16 @@
 
 登录接口会签发：
 
-- `access_token`
-- `refresh_token`
+- `access_token`（Bearer Token）
+- `refresh_token`（HttpOnly Cookie，path 限定 `/api/v1/auth/token/refresh`）
 
-前端请求工具会按 Bearer Token 方式发送：
+需要鉴权的接口请在请求头携带：
 
 ```http
 Authorization: Bearer <access_token>
 ```
 
-但当前后端 `get_current_user_id()` 仍固定返回 `1`，没有实际解析 `Authorization` 请求头。因此：
-
-- `POST /auth/login` 已实现真实用户名密码校验和 token 签发
-- `GET /conversation/list`、`POST /chat/stream` 代码上依赖 `current_user_id`
-- 当前 `current_user_id` 实际恒为 `1`
+`get_current_user_id()` 会解析并校验 access token（类型 / 过期 / 签名），失败抛 `InvalidAccessTokenError`（401002）。所有标注"鉴权必须"的接口都走这个依赖。
 
 ## 4. 接口总览
 
@@ -88,8 +84,9 @@ Authorization: Bearer <access_token>
 | `GET` | `/healthz` | `ApiResponse[dict]` | 健康检查 |
 | `POST` | `/auth/login` | `ApiResponse[TokenResponse]` | 登录并签发 token |
 | `GET` | `/conversation/list` | `ApiResponse[list[dict]]` | 获取当前用户会话列表 |
-| `POST` | `/chat/stream` | `text/event-stream` | 流式聊天 |
+| `POST` | `/chat/stream` | `text/event-stream` | 流式聊天（支持带图） |
 | `POST` | `/upload/image` | `ApiResponse[UploadImageResponse]` | 上传单张图片到对象存储 |
+| `POST` | `/upload/image/presign` | `ApiResponse[PresignResponse]` | 批量为已有 object_key 生成 presigned URL |
 | `DELETE` | `/upload/image` | `ApiResponse[DeleteImageResponse]` | 按 object_key 删除单张图片 |
 
 ## 5. 健康检查
@@ -182,7 +179,7 @@ Authorization: Bearer <access_token>
 
 请求参数：无。
 
-当前用户来源：`get_current_user_id()`，现阶段固定为 `1`。
+当前用户来源：`get_current_user_id()`，从 access token 中解析。
 
 响应示例：
 
@@ -226,11 +223,12 @@ Authorization: Bearer <access_token>
 
 ### `POST /chat/stream`
 
-用于流式返回模型回复，响应类型为 SSE。
+用于流式返回模型回复，响应类型为 SSE。鉴权必须。
 
 请求头：
 
 ```http
+Authorization: Bearer <access_token>
 Content-Type: application/json
 Accept: text/event-stream
 ```
@@ -243,7 +241,15 @@ Accept: text/event-stream
   "message": {
     "content": "这条草鱼身上有白点，还经常蹭池壁，帮我判断一下",
     "images": [
-      "https://example.com/fish_001.jpg"
+      {
+        "object_key": "images/2026/05/30/abc.png",
+        "content_type": "image/png",
+        "extension": "png",
+        "size": 162640,
+        "original_filename": "图片3.png",
+        "url": "http://localhost:9000/fish-med-agent/images/2026/05/30/abc.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+        "url_expires_at": 1780164807101
+      }
     ]
   }
 }
@@ -253,35 +259,71 @@ Accept: text/event-stream
 
 | 字段 | 类型 | 必填 | 约束 | 说明 |
 | --- | --- | --- | --- | --- |
-| `conversation_id` | integer | 是 | - | 会话 ID |
+| `conversation_id` | integer | 是 | 新会话传 `0` | 会话 ID。不存在时后端自动创建 |
 | `message.content` | string | 是 | 最少 1 个字符 | 用户文本 |
-| `message.images` | array[string] | 否 | - | 图片 URL 列表；当前模型调用未使用该字段 |
+| `message.images` | array[`ImageInput`] | 否 | 最多 6 张 | 上传接口返回的整个 `data` 对象，前端直接透传即可 |
 
-额外字段：禁止。`ChatRequest` 配置了 `extra="forbid"`。
+**`ImageInput` 结构**（与 `POST /upload/image` 返回的 `data` 字段对齐）：
+
+| 字段 | 类型 | 必填 | 后端使用 | 说明 |
+| --- | --- | --- | --- | --- |
+| `object_key` | string | 是 | ✅ | MinIO 对象 key，后端用它取原图喂给视觉模型 |
+| `content_type` | string | 是 | ✅ | MIME 类型，须匹配 `image/(jpeg|png|webp|gif)` |
+| `extension` | string | 是 | - | 文件扩展名 |
+| `size` | integer | 是 | - | 字节数，`>= 0` |
+| `original_filename` | string \| null | 否 | - | 原始文件名，仅用于日志展示 |
+| `url` | string | 否 | - | 前端展示用 URL；后端**忽略**，仅 upload response 携带方便前端透传 |
+| `url_expires_at` | integer | 否 | - | URL 过期时间戳；后端**忽略**，同上 |
+
+> 前端无需挑字段，把 `POST /upload/image` 返回的 `data` 对象整体塞进 `images` 数组即可。`ImageInput` 默认 `extra="ignore"`，`url` / `url_expires_at` 等展示字段会被静默忽略，不影响请求合法性。
+
+额外字段策略：`ChatRequest` 顶层配置 `extra="forbid"`（多传顶层字段会 422），但嵌套对象（如 `ImageInput`）按各自默认（`ignore`）处理。
 
 当前行为：
 
-- 如果 `conversation_id` 对应会话不存在，会自动创建新会话
-- 新会话标题为 `message.content` 前 10 个字符
-- 当前用户 ID 来自 `get_current_user_id()`，现阶段固定为 `1`
-- 模型调用只传入文本历史，不传图片
-- 成功结束后保存 user 和 assistant 两条消息
-- 模型异常时回滚数据库，并返回 `error` SSE 事件
+- 如果 `conversation_id` 对应会话不存在，会自动创建新会话；新会话标题为 `message.content` 前 10 个字符
+- 当前用户 ID 来自 `get_current_user_id()`，从 access token 解析
+- **带图请求**：进入主对话循环前，先调用 MiMo VLM 把每张图转成中文描述（并行执行），描述以 `[用户附图]` 段落形式拼接到 user `content` 末尾。主对话模型（DeepSeek）**只看到融合后的纯文本**，不直接处理图片
+- 持久化时 user 消息保存的 `content` 是融合后的版本，`images` 字段单独保留原始元数据（含 `object_key`），前端回放时可凭此调 `/upload/image/presign` 取回展示 URL
+- 模型可能在生成最终答复前调用工具（`rag_search` 知识库 / `web_search` 联网搜索），单轮最多 8 次工具循环
+- 成功结束后保存 user 和 assistant 消息；模型异常时回滚数据库，返回 `error` SSE 事件
 
-SSE 事件：
+SSE 事件类型：
 
-| event | data | 说明 |
+| event | data | 触发时机 |
 | --- | --- | --- |
-| `start` | `{}` | 流开始 |
-| `message.delta` | `{"content":"..."}` | 模型文本增量 |
-| `done` | `{}` | 流结束 |
-| `error` | `{"message":"模型响应失败，请稍后重试"}` | 模型调用或保存失败 |
+| `start` | `{}` | 整轮对话开始（一定是第一个事件） |
+| `vision.start` | `{"count": number}` | 仅当 `images` 非空时出现，视觉模型开始识别 |
+| `vision.done` | `{"count": number}` | 视觉模型全部完成（成功或失败都算） |
+| `tool.call` | `{tool_call_id, name, arguments}` | LLM 决定调工具，开始执行。`arguments` 是 JSON 字符串 |
+| `tool.result` | `{tool_call_id, name, ok, error?, result}` | 工具执行完成，与上一条 `tool.call` 同 `tool_call_id` 配对 |
+| `message.delta` | `{"content": "..."}` | 模型文本增量，可能高频出现，前端按顺序拼接 |
+| `done` | `{}` | 整轮正常结束（最后一个事件） |
+| `error` | `{"message": "..."}` | 整轮失败（最后一个事件），与 `done` 互斥 |
 
-SSE 示例：
+事件顺序约束：
+
+- `start` 必然第一；`done` / `error` 必然最后，且互斥
+- `vision.*` 只在带图时出现，位于所有 `tool.*` / `message.delta` 之前
+- `tool.call` 与 `tool.result` 总是成对出现；同一轮可循环多次后才进入 `message.delta`
+
+SSE 示例（带 1 张图）：
 
 ```text
 event: start
 data: {}
+
+event: vision.start
+data: {"count":1}
+
+event: vision.done
+data: {"count":1}
+
+event: tool.call
+data: {"tool_call_id":"call_abc","name":"rag_search","arguments":"{\"query\":\"草鱼 白点 蹭池壁\",\"mode\":\"mix\"}"}
+
+event: tool.result
+data: {"tool_call_id":"call_abc","name":"rag_search","ok":true,"result":{"chunks":[]}}
 
 event: message.delta
 data: {"content":"从图片和描述看，"}
@@ -292,6 +334,8 @@ data: {"content":"疑似小瓜虫病。"}
 event: done
 data: {}
 ```
+
+> **前端实现提示**：浏览器内置 `EventSource` 不支持自定义 headers，无法带 `Authorization`。请使用 `fetch + ReadableStream` 手动解析 SSE。
 
 ## 9. 图片上传与删除
 
@@ -332,7 +376,9 @@ Content-Type: multipart/form-data
     "content_type": "image/jpeg",
     "extension": "jpg",
     "size": 184320,
-    "original_filename": "fish.jpg"
+    "original_filename": "fish.jpg",
+    "url": "http://localhost:9000/fish-med-agent/images/2026/05/30/3f2a...c1.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...",
+    "url_expires_at": 1780164807101
   }
 }
 ```
@@ -346,8 +392,73 @@ Content-Type: multipart/form-data
 | `extension` | string | 文件扩展名，例如 `jpg` |
 | `size` | integer | 文件大小，单位字节 |
 | `original_filename` | string \| null | 客户端上传时的原始文件名 |
+| `url` | string | 可直接 `<img src>` 使用的预签名 URL（默认有效期 1 小时） |
+| `url_expires_at` | integer | URL 过期时间，UTC epoch **毫秒**时间戳；保证 `≤` URL 的实际过期点 |
+
+> 部署提示：`url` 的 host 取自 `MINIO_ENDPOINT` 配置。生产环境需将其改为浏览器可达的对外地址，否则签名 URL 不可访问。
 
 错误：`400001`（类型不支持）、`413001`（超过 10MB）、`401002`（未登录/token 无效）、`500001`（对象存储写入失败）。
+
+### `POST /upload/image/presign`
+
+为已有的 object_key 批量补签 presigned URL，用于历史会话回显图片。
+
+请求头：
+
+```http
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "object_keys": [
+    "images/2026/05/30/abc.png",
+    "images/2026/05/30/def.jpg"
+  ]
+}
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 约束 | 说明 |
+| --- | --- | --- | --- | --- |
+| `object_keys` | array[string] | 是 | 长度 `1..50` | 待签名的 object_key 列表 |
+
+成功响应：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "request_id": "req_123",
+  "data": {
+    "urls": {
+      "images/2026/05/30/abc.png": "http://localhost:9000/fish-med-agent/images/.../abc.png?X-Amz-...",
+      "images/2026/05/30/def.jpg": "http://localhost:9000/fish-med-agent/images/.../def.jpg?X-Amz-..."
+    },
+    "expires_at": 1780164807101
+  }
+}
+```
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `urls` | object[string, string] | `object_key → 预签名 URL` 的字典 |
+| `expires_at` | integer | 所有 URL 的统一过期时间，UTC epoch **毫秒**时间戳；保证 `≤` 任一 URL 的实际过期点 |
+
+当前行为与说明：
+
+- 单次最多签 **50** 个 key，超过返回 `422`（Pydantic 校验失败）
+- 非法 key（空、含 `..`、不在 `images/` 前缀下）会**静默从 `urls` 字典中省略**，前端按 `urls[key]` 缺失处理即可
+- **不调 `head_object` 检查对象是否存在**，节省一轮 RTT；已删除的 key 也能签出 URL，访问时 MinIO 返 404，前端用 `<img onerror>` 兜底显示占位
+- `expires_at` 在签名前一刻计算，**严格不晚于**任一 URL 的实际过期点，前端按 `Date.now() < expires_at` 判断即可
+
+错误：`401002`（未登录/token 无效）。
 
 ### `DELETE /upload/image`
 
@@ -413,8 +524,8 @@ Content-Type: application/json
 
 按现有代码，下一步最应该补的是：
 
-1. 将 `get_current_user_id()` 改为解析并校验 access token
-2. 增加 `POST /auth/refresh`
-3. 给参数校验异常增加统一响应处理器
-4. 为 `conversation/list` 定义明确的响应 schema，避免直接暴露 ORM 字段名
-5. 决定 `message.images` 是否进入模型调用；如果暂不支持，应从请求 schema 中移除或文档明确标注
+1. 给参数校验异常（FastAPI/Pydantic 默认 `422`）增加统一响应处理器，对齐 `ApiResponse` 格式
+2. 为 `conversation/list` 定义明确的响应 schema，避免直接暴露 ORM 字段名（`metadata_` 等）
+3. 上传/删除接口的 `object_key` 未编码用户归属，任意登录用户可删任意图片；需在 key 中编码 user_id 或引入图片归属表
+4. 登录接口无速率限制，存在暴力破解风险，上线前需接 `slowapi` + Redis
+5. 长对话超模型上下文窗口的 token 计算与截断尚未实现
