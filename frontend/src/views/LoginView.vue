@@ -17,6 +17,12 @@ const rememberMe = ref(false) // 记住密码标志位
 
 const isLogining = ref(false) // 登录状态标志位
 
+const homeSessionKeys = ['fish-med-agent:selected-conversation-id', 'fish-med-agent:sidebar-collapsed']
+
+const clearHomeSessionState = () => {
+    homeSessionKeys.forEach((key) => window.sessionStorage.removeItem(key))
+}
+
 // 登录按钮点击事件处理
 const login = async () => {
     // 设置登录状态标志位为 true
@@ -45,8 +51,7 @@ const login = async () => {
 
         // 登录成功，将access token 保存到store
         authStore.setAccessToken(data.access_token, data.expires_at, username.value)
-
-
+        clearHomeSessionState()
 
         // 登录成功后，跳转到上一个路由或默认路由
         if (typeof route.query.redirect === 'string' && route.query.redirect !== '') {

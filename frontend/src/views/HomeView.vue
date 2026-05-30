@@ -34,12 +34,40 @@ type MessageImageView = {
 }
 
 const MAX_IMAGE_ATTACHMENTS = 6
+const HOME_SELECTED_CONVERSATION_SESSION_KEY = 'fish-med-agent:selected-conversation-id'
+const HOME_SIDEBAR_COLLAPSED_SESSION_KEY = 'fish-med-agent:sidebar-collapsed'
+
+function getSessionNumber(key: string, fallback: number) {
+    const value = window.sessionStorage.getItem(key)
+    const parsed = value ? Number.parseInt(value, 10) : Number.NaN
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+function getSessionBoolean(key: string, fallback: boolean) {
+    const value = window.sessionStorage.getItem(key)
+
+    if (value === 'true') {
+        return true
+    }
+
+    if (value === 'false') {
+        return false
+    }
+
+    return fallback
+}
+
+function clearHomeSessionState() {
+    window.sessionStorage.removeItem(HOME_SELECTED_CONVERSATION_SESSION_KEY)
+    window.sessionStorage.removeItem(HOME_SIDEBAR_COLLAPSED_SESSION_KEY)
+}
+
 const sidebarOpen = ref(false)
-const sidebarCollapsed = ref(false)
+const sidebarCollapsed = ref(getSessionBoolean(HOME_SIDEBAR_COLLAPSED_SESSION_KEY, false))
 const suppressCollapsedBrandHover = ref(false)
 const authStore = useAuthStore()
 const router = useRouter()
-const selectedConversationId = ref<number>(0)
+const selectedConversationId = ref<number>(getSessionNumber(HOME_SELECTED_CONVERSATION_SESSION_KEY, 0))
 const draftMessage = ref('')
 const messageInputComposing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -162,8 +190,11 @@ async function loadConversationList() {
         const list = await fetchConversationList()
         conversations.value = list
 
-        const selectedExists = conversations.value.some((conversation) => conversation.id === selectedConversationId.value)
-        selectedConversationId.value = selectedExists ? selectedConversationId.value : (conversations.value[0]?.id ?? 0)
+        if (selectedConversationId.value !== 0) {
+            const selectedExists = conversations.value.some((conversation) => conversation.id === selectedConversationId.value)
+            selectedConversationId.value = selectedExists ? selectedConversationId.value : 0
+        }
+
         scrollToBottom()
     } catch (error) {
         conversationListError.value = error instanceof Error ? error.message : '历史对话加载失败'
@@ -282,6 +313,7 @@ function closeLogoutDialog() {
 
 function confirmLogout() {
     abortActiveStream('已停止生成。')
+    clearHomeSessionState()
     authStore.clearAccessToken()
     sidebarOpen.value = false
     logoutDialogOpen.value = false
@@ -831,11 +863,21 @@ function createId(prefix: string) {
 watch(
     selectedConversationId,
     (currentId, previousId) => {
+        window.sessionStorage.setItem(HOME_SELECTED_CONVERSATION_SESSION_KEY, String(currentId))
+
         if (previousId && currentId !== previousId) {
             abortActiveStream('已停止生成。')
         }
 
         scrollToBottom()
+    },
+    { flush: 'post' },
+)
+
+watch(
+    sidebarCollapsed,
+    (collapsed) => {
+        window.sessionStorage.setItem(HOME_SIDEBAR_COLLAPSED_SESSION_KEY, String(collapsed))
     },
     { flush: 'post' },
 )
