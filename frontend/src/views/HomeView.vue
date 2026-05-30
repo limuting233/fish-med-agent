@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, LogOut, Menu, MessageCircle, Mic, MoreHorizontal, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Clock, FileImage, LogOut, MessageCircle, Mic, MoreHorizontal, PanelLeft, Paperclip, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -35,6 +35,7 @@ type MessageImageView = {
 
 const MAX_IMAGE_ATTACHMENTS = 6
 const sidebarOpen = ref(false)
+const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
 const router = useRouter()
 const selectedConversationId = ref<number>(0)
@@ -123,6 +124,15 @@ const userNickname = computed(() => authStore.nickname || authStore.username || 
 const userUsername = computed(() => (authStore.username ? `@${authStore.username}` : '@fish-med-user'))
 const userInitial = computed(() => Array.from(userNickname.value.trim() || authStore.username.trim() || 'F')[0]?.toUpperCase() ?? 'F')
 
+function toggleSidebar() {
+    if (window.matchMedia('(max-width: 900px)').matches) {
+        sidebarOpen.value = !sidebarOpen.value
+        return
+    }
+
+    sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
 async function loadCurrentUser() {
     try {
         const user = await getCurrentUserRequest()
@@ -155,8 +165,7 @@ async function loadConversationList() {
 }
 
 function getConversationTitle(conversation: Conversation) {
-    const lastContent = getMessageContent(getLastMessage(conversation.messages))
-    return conversation.title.trim() || lastContent.slice(0, 18) || '新的鱼病问诊'
+    return conversation.title.trim() || '新的鱼病问诊'
 }
 
 function getConversationSummary(conversation: Conversation) {
@@ -681,7 +690,6 @@ async function sendMessage() {
 
     updateConversationState(activeId, (conversation) => ({
         ...conversation,
-        title: content ? content.slice(0, 18) : '图片问诊',
         summary: '正在生成诊断结果',
         messages: [
             ...currentMessages,
@@ -841,7 +849,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div class="home-shell" :class="{ 'home-shell--sidebar-open': sidebarOpen }">
+    <div class="home-shell" :class="{ 'home-shell--sidebar-open': sidebarOpen, 'home-shell--sidebar-collapsed': sidebarCollapsed }">
         <button v-if="sidebarOpen" class="sidebar-scrim" type="button" aria-label="关闭会话列表" @click="sidebarOpen = false"></button>
 
         <div v-if="searchOpen" class="search-dialog-layer" role="presentation" @keydown.esc.stop.prevent="closeSearch">
@@ -937,7 +945,6 @@ onBeforeUnmount(() => {
                                 <span class="conversation-item__title">{{ getConversationTitle(conversation) }}</span>
                                 <span class="conversation-item__time">{{ getConversationTime(conversation) }}</span>
                             </span>
-                            <span class="conversation-item__summary">{{ getConversationSummary(conversation) }}</span>
                         </button>
                     </section>
                 </template>
@@ -962,8 +969,8 @@ onBeforeUnmount(() => {
 
         <main class="chat-workspace">
             <header class="chat-header">
-                <button class="mobile-menu-button" type="button" aria-label="打开会话列表" @click="sidebarOpen = true">
-                    <Menu :size="20" stroke-width="2" />
+                <button class="mobile-menu-button" type="button" aria-label="切换会话列表" @click="toggleSidebar">
+                    <PanelLeft :size="20" stroke-width="2" />
                 </button>
 
                 <div class="chat-header__title-block">
@@ -1133,6 +1140,11 @@ onBeforeUnmount(() => {
     background: var(--muted);
     color: var(--foreground);
     font-family: Inter, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    transition: grid-template-columns 220ms ease;
+}
+
+.home-shell--sidebar-collapsed {
+    grid-template-columns: 80px minmax(0, 1fr);
 }
 
 button,
@@ -1432,11 +1444,14 @@ textarea:focus-visible {
 
 .sidebar-brand {
     display: flex;
+    height: 50px;
+    flex: 0 0 50px;
     align-items: center;
     gap: 10px;
+    overflow: hidden;
     border: 1px solid transparent;
     border-radius: var(--radius);
-    padding: 6px 6px 10px;
+    padding: 6px 6px 10px 11px;
 }
 
 .sidebar-brand__logo {
@@ -1450,6 +1465,9 @@ textarea:focus-visible {
     display: grid;
     min-width: 0;
     gap: 2px;
+    transition:
+        opacity 100ms ease,
+        transform 140ms ease;
 }
 
 .sidebar-brand__text strong {
@@ -1463,9 +1481,12 @@ textarea:focus-visible {
 }
 
 .sidebar-brand__text span {
+    overflow: hidden;
     color: var(--muted-foreground);
     font-size: 12px;
     line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .new-chat-button {
@@ -1484,6 +1505,7 @@ textarea:focus-visible {
     line-height: 1;
     transition:
         background-color 160ms ease,
+        opacity 100ms ease,
         transform 160ms ease;
 }
 
@@ -1508,6 +1530,9 @@ textarea:focus-visible {
     color: var(--muted-foreground);
     box-shadow: var(--shadow-sm);
     text-align: left;
+    transition:
+        opacity 100ms ease,
+        transform 140ms ease;
 }
 
 .search-field:focus-within {
@@ -1559,6 +1584,72 @@ textarea:focus-visible {
     padding: 2px 0 10px;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+    transition:
+        opacity 100ms ease,
+        transform 140ms ease;
+}
+
+.home-shell--sidebar-collapsed .conversation-sidebar {
+    width: 100%;
+    min-width: 0;
+    align-items: stretch;
+    padding: 12px;
+    opacity: 1;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand {
+    width: 56px;
+    height: 50px;
+    flex-basis: 50px;
+    justify-content: flex-start;
+    overflow: hidden;
+    padding: 6px 6px 10px 11px;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand__logo {
+    width: 34px;
+    height: 34px;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand__text,
+.home-shell--sidebar-collapsed .new-chat-button,
+.home-shell--sidebar-collapsed .search-field,
+.home-shell--sidebar-collapsed .new-chat-button span,
+.home-shell--sidebar-collapsed .search-field span,
+.home-shell--sidebar-collapsed .sidebar-user-panel__identity,
+.home-shell--sidebar-collapsed .sidebar-user-panel__logout {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-10px);
+    transition:
+        opacity 100ms ease,
+        transform 140ms ease;
+}
+
+.home-shell--sidebar-collapsed .sidebar-brand__text,
+.home-shell--sidebar-collapsed .sidebar-user-panel__identity,
+.home-shell--sidebar-collapsed .sidebar-user-panel__logout {
+    display: none;
+}
+
+.home-shell--sidebar-collapsed .conversation-groups {
+    display: none;
+}
+
+.home-shell--sidebar-collapsed .new-chat-button,
+.home-shell--sidebar-collapsed .search-field {
+    display: none;
+}
+
+.home-shell--sidebar-collapsed .sidebar-user-panel {
+    width: 56px;
+    height: 50px;
+    margin-top: auto;
+    justify-content: flex-start;
+    align-items: center;
+    border-top: 0;
+    padding: 12px 8px 2px 10px;
+    transform: none;
 }
 
 .conversation-state {
@@ -1592,13 +1683,14 @@ textarea:focus-visible {
 }
 
 .conversation-item {
-    display: grid;
+    display: flex;
     width: 100%;
-    gap: 5px;
+    min-height: 42px;
+    align-items: center;
     border: 1px solid transparent;
     border-radius: calc(var(--radius) - 2px);
     background: transparent;
-    padding: 10px 11px;
+    padding: 0 11px;
     color: var(--foreground);
     text-align: left;
     transition:
@@ -1620,13 +1712,13 @@ textarea:focus-visible {
 
 .conversation-item__topline {
     display: flex;
+    width: 100%;
     min-width: 0;
     align-items: center;
     gap: 10px;
 }
 
-.conversation-item__title,
-.conversation-item__summary {
+.conversation-item__title {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1646,12 +1738,6 @@ textarea:focus-visible {
     line-height: 1.2;
 }
 
-.conversation-item__summary {
-    color: var(--muted-foreground);
-    font-size: 12px;
-    line-height: 1.2;
-}
-
 .sidebar-user-panel {
     display: flex;
     flex: 0 0 auto;
@@ -1660,7 +1746,10 @@ textarea:focus-visible {
     gap: 10px;
     border-top: 1px solid var(--border);
     background: transparent;
-    padding: 12px 8px 2px;
+    padding: 12px 8px 2px 10px;
+    transition:
+        opacity 100ms ease,
+        transform 140ms ease;
 }
 
 .sidebar-user-panel__avatar {
@@ -1776,7 +1865,8 @@ textarea:focus-visible {
 }
 
 .mobile-menu-button {
-    display: none;
+    display: inline-flex;
+    flex: 0 0 auto;
 }
 
 .chat-header__title-block {
@@ -2456,6 +2546,10 @@ textarea:focus-visible {
         grid-template-columns: minmax(0, 1fr);
     }
 
+    .home-shell--sidebar-collapsed {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
     .sidebar-scrim {
         position: fixed;
         inset: 0;
@@ -2475,13 +2569,89 @@ textarea:focus-visible {
         transition: transform 180ms ease;
     }
 
-    .home-shell--sidebar-open .conversation-sidebar {
-        transform: translateX(0);
+    .home-shell--sidebar-collapsed .conversation-sidebar {
+        width: min(320px, calc(100vw - 44px));
+        align-items: stretch;
+        gap: 12px;
+        border-right: 1px solid var(--border);
+        padding: 12px;
+        opacity: 1;
+        pointer-events: auto;
     }
 
-    .mobile-menu-button {
+    .home-shell--sidebar-collapsed .sidebar-brand {
+        width: auto;
+        height: 50px;
+        flex-basis: 50px;
+        justify-content: flex-start;
+        overflow: hidden;
+        padding: 6px 6px 10px;
+    }
+
+    .home-shell--sidebar-collapsed .sidebar-brand__logo {
+        width: 34px;
+        height: 34px;
+    }
+
+    .home-shell--sidebar-collapsed .sidebar-brand__text,
+    .home-shell--sidebar-collapsed .new-chat-button,
+    .home-shell--sidebar-collapsed .search-field,
+    .home-shell--sidebar-collapsed .conversation-groups,
+    .home-shell--sidebar-collapsed .sidebar-user-panel {
+        opacity: 1;
+        pointer-events: auto;
+        transform: none;
+    }
+
+    .home-shell--sidebar-collapsed .new-chat-button,
+    .home-shell--sidebar-collapsed .search-field,
+    .home-shell--sidebar-collapsed .sidebar-user-panel {
+        position: static;
+        width: 100%;
+        height: auto;
+        left: auto;
+        bottom: auto;
+        margin-top: 0;
+        justify-content: center;
+    }
+
+    .home-shell--sidebar-collapsed .conversation-groups {
+        display: flex;
+    }
+
+    .home-shell--sidebar-collapsed .search-field {
+        border-color: var(--input);
+        background: var(--background);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .home-shell--sidebar-collapsed .sidebar-user-panel {
+        justify-content: flex-start;
+        border-top: 1px solid var(--border);
+        padding: 12px 8px 2px;
+    }
+
+    .home-shell--sidebar-collapsed .new-chat-button span,
+    .home-shell--sidebar-collapsed .search-field span,
+    .home-shell--sidebar-collapsed .sidebar-user-panel__identity,
+    .home-shell--sidebar-collapsed .sidebar-user-panel__logout {
+        opacity: 1;
+        pointer-events: auto;
+        transform: none;
+    }
+
+    .home-shell--sidebar-collapsed .sidebar-brand__text,
+    .home-shell--sidebar-collapsed .sidebar-user-panel__identity,
+    .home-shell--sidebar-collapsed .sidebar-user-panel__logout {
+        display: grid;
+    }
+
+    .home-shell--sidebar-collapsed .sidebar-user-panel__logout {
         display: inline-flex;
-        flex: 0 0 auto;
+    }
+
+    .home-shell--sidebar-open .conversation-sidebar {
+        transform: translateX(0);
     }
 
     .chat-header {
