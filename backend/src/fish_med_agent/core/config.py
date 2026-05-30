@@ -59,11 +59,14 @@ class Settings(BaseSettings):
     COOKIE_SAMEITE: str
 
     # MinIO 对象存储配置
-    MINIO_ENDPOINT: str        
+    MINIO_ENDPOINT: str
     MINIO_ACCESS_KEY: str
     MINIO_SECRET_KEY: str
     MINIO_BUCKET: str
-    MINIO_REGION: str 
+    MINIO_REGION: str
+
+    # Taily 配置
+    TAILY_API_KEY: str
 
     model_config = SettingsConfigDict(
         env_file=f".env.{ENV}",
@@ -100,5 +103,6 @@ class Settings(BaseSettings):
     @property
     def refresh_token_cookie_path(self) -> str:
         return f"{self.api_prefix}/auth/token/refresh"
+
 
 settings = Settings()
