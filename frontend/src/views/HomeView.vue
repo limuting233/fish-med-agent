@@ -1535,7 +1535,7 @@ onBeforeUnmount(() => {
     max-height: 100vh;
     max-height: 100dvh;
     display: grid;
-    grid-template-columns: 320px minmax(0, 1fr);
+    grid-template-columns: 284px minmax(0, 1fr);
     overflow: hidden;
     background: var(--muted);
     color: var(--foreground);
