@@ -53,6 +53,12 @@
 | --- | --- | --- |
 | `401001` | `401` | 用户名或密码错误 |
 | `401002` | `401` | 无效 token |
+| `400001` | `400` | 不支持的文件类型（仅 jpg/png/webp/gif） |
+| `400004` | `400` | object_key 非法 |
+| `404002` | `404` | 图片不存在 |
+| `413001` | `413` | 文件大小超过限制（最大 10MB） |
+| `500001` | `500` | 文件上传失败（对象存储写入错误） |
+| `500002` | `500` | 图片删除失败（对象存储删除错误） |
 
 说明：FastAPI/Pydantic 参数校验错误仍使用框架默认 `422` 响应格式；当前项目尚未封装统一校验异常处理器。
 
@@ -83,6 +89,8 @@ Authorization: Bearer <access_token>
 | `POST` | `/auth/login` | `ApiResponse[TokenResponse]` | 登录并签发 token |
 | `GET` | `/conversation/list` | `ApiResponse[list[dict]]` | 获取当前用户会话列表 |
 | `POST` | `/chat/stream` | `text/event-stream` | 流式聊天 |
+| `POST` | `/upload/image` | `ApiResponse[UploadImageResponse]` | 上传单张图片到对象存储 |
+| `DELETE` | `/upload/image` | `ApiResponse[DeleteImageResponse]` | 按 object_key 删除单张图片 |
 
 ## 5. 健康检查
 
@@ -285,11 +293,112 @@ event: done
 data: {}
 ```
 
-## 9. 当前未实现
+## 9. 图片上传与删除
+
+图片存储在 MinIO（S3 协议兼容）对象存储中。两个接口都需要鉴权（`Authorization: Bearer <access_token>`）。
+
+### `POST /upload/image`
+
+上传单张图片。请求格式为 `multipart/form-data`，字段名为 `file`。
+
+请求头：
+
+```http
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | file | 是 | 待上传的图片文件 |
+
+校验规则：
+
+- 类型：仅 `jpg` / `png` / `webp` / `gif`，按文件 magic number 判断，**不信任** `Content-Type`
+- 大小：最大 `10MB`，分块读取，超限立即中止
+- object_key 由服务端生成，格式为 `images/{yyyy}/{mm}/{dd}/{uuid}.{ext}`
+
+成功响应：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "request_id": "req_123",
+  "data": {
+    "object_key": "images/2026/05/30/3f2a...c1.jpg",
+    "content_type": "image/jpeg",
+    "extension": "jpg",
+    "size": 184320,
+    "original_filename": "fish.jpg"
+  }
+}
+```
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `object_key` | string | 对象存储中的 key，删除/引用时使用 |
+| `content_type` | string | 服务端按 magic number 检测出的 MIME |
+| `extension` | string | 文件扩展名，例如 `jpg` |
+| `size` | integer | 文件大小，单位字节 |
+| `original_filename` | string \| null | 客户端上传时的原始文件名 |
+
+错误：`400001`（类型不支持）、`413001`（超过 10MB）、`401002`（未登录/token 无效）、`500001`（对象存储写入失败）。
+
+### `DELETE /upload/image`
+
+按 object_key 删除单张图片。请求体为 JSON。
+
+请求头：
+
+```http
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "object_key": "images/2026/05/30/3f2a...c1.jpg"
+}
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 约束 | 说明 |
+| --- | --- | --- | --- | --- |
+| `object_key` | string | 是 | 非空，须以 `images/` 开头且不含 `..` | 上传成功后返回的 object_key |
+
+成功响应：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "request_id": "req_123",
+  "data": {
+    "object_key": "images/2026/05/30/3f2a...c1.jpg"
+  }
+}
+```
+
+当前行为与说明：
+
+- key 校验只允许操作 `images/` 前缀下的对象，防止越权删除 bucket 内其它命名空间
+- 删除前先 `head_object` 探测存在性：不存在返回 `404002`，而不是静默成功
+- object_key **未编码用户归属**，因此任意登录用户均可删除任意图片；若需"仅能删自己的"，需在 key 中编码 user_id 或引入图片归属表
+
+错误：`400004`（object_key 非法）、`404002`（图片不存在）、`401002`（未登录/token 无效）、`500002`（对象存储删除失败）。
+
+## 10. 当前未实现
 
 以下能力在旧文档中出现过，但当前后端没有对应路由，不能按已实现接口使用：
 
-- 图片上传
 - 创建会话接口
 - 会话详情接口
 - 消息历史接口
@@ -300,7 +409,7 @@ data: {}
 - 知识库疾病检索接口
 - 用户反馈接口
 
-## 10. 现有差距
+## 11. 现有差距
 
 按现有代码，下一步最应该补的是：
 
