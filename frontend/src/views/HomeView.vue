@@ -51,6 +51,16 @@ type ToolResultData = {
     result?: unknown
 }
 
+type VisionEventData = {
+    count?: number
+}
+
+type VisionStatus = {
+    conversationId: number
+    assistantMessageIndex: number
+    count: number
+}
+
 type ToolCallPanel = {
     id: string
     conversationId: number
@@ -134,6 +144,7 @@ const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref('')
 const responseGenerating = ref(false)
+const activeVisionStatus = ref<VisionStatus | null>(null)
 const toolCallPanels = ref<ToolCallPanel[]>([])
 let activeStream: {
     session: StreamSession
@@ -303,11 +314,19 @@ function getLastMessage(messages: Conversation['messages']) {
 }
 
 function getMessageContent(message?: ConversationMessage) {
-    return message?.content ?? ''
+    if (!message) {
+        return ''
+    }
+
+    return message.role === 'user' ? getUserDisplayContent(message.content) : message.content
+}
+
+function getUserDisplayContent(content: string) {
+    return content.replace(/\n*\[用户附图\][\s\S]*$/u, '').trim()
 }
 
 function renderAssistantMarkdown(content: string) {
-    return markdown.render(content || '正在分析...')
+    return markdown.render(content || '正在生成...')
 }
 
 function getToolDisplayName(name: string) {
@@ -320,6 +339,10 @@ function getToolPanelTitle(panel: ToolCallPanel) {
     }
 
     return `${panel.name} 工具调用${panel.status === 'error' ? '失败' : '成功'}`
+}
+
+function getVisionStatusText(status: VisionStatus | null) {
+    return status && status.count > 0 ? `正在分析图片（${status.count} 张）` : '正在分析图片'
 }
 
 function stringifyToolPayload(value: unknown) {
@@ -428,9 +451,28 @@ function getToolPanelsForMessage(message: DisplayConversationMessage) {
     return Array.from(panelsById.values()).sort((first, second) => first.anchorOffset - second.anchorOffset)
 }
 
+function getVisionStatusForMessage(message: DisplayConversationMessage) {
+    if (message.role !== 'assistant') {
+        return null
+    }
+
+    const conversation = activeConversation.value
+    const status = activeVisionStatus.value
+
+    if (!conversation || !status || status.conversationId !== conversation.id) {
+        return null
+    }
+
+    return conversation.messages?.[status.assistantMessageIndex] === message ? status : null
+}
+
 function getAssistantMessageParts(message: DisplayConversationMessage): AssistantMessagePart[] {
     const content = message.content
     const panels = getToolPanelsForMessage(message)
+
+    if (!content && !panels.length && getVisionStatusForMessage(message)) {
+        return []
+    }
 
     if (!panels.length) {
         return [
@@ -540,6 +582,25 @@ function clearRunningToolPanels(token?: string) {
     }
 
     toolCallPanels.value = toolCallPanels.value.map((panel) => (panel.status === 'running' ? { ...panel, status: 'done' } : panel))
+}
+
+function handleVisionStartEvent(event: StreamEvent, conversationId: number, assistantMessageIndex: number) {
+    const data = event.data as VisionEventData | null
+    const count = typeof data?.count === 'number' ? data.count : 0
+
+    activeVisionStatus.value = {
+        conversationId,
+        assistantMessageIndex,
+        count,
+    }
+}
+
+function clearVisionStatus(token?: string) {
+    if (token && activeStream?.token !== token) {
+        return
+    }
+
+    activeVisionStatus.value = null
 }
 
 function getMetadataDate(conversation: Conversation, key: string) {
@@ -1004,6 +1065,7 @@ function abortActiveStream(fallbackText?: string) {
 
     const { session, conversationId, assistantMessageIndex } = activeStream
     finalizeAssistantMessage(conversationId, assistantMessageIndex, fallbackText)
+    clearVisionStatus()
     session.abort()
     activeStream = null
     responseGenerating.value = false
@@ -1032,7 +1094,7 @@ async function sendMessage() {
     const assistantMessageIndex = currentMessages.length + 1
     const streamToken = createId('stream')
     const messageImages = createMessageImages(attachmentsToSend, uploadedImages)
-    const imageObjectKeys = uploadedImages.map((image) => image.object_key)
+    const streamConversationId = existingConversation ? activeConversationItem.id : 0
 
     updateConversationState(activeId, (conversation) => ({
         ...conversation,
@@ -1064,15 +1126,27 @@ async function sendMessage() {
 
     const session = streamChat(
         {
-            conversation_id: activeConversationItem.id,
+            conversation_id: streamConversationId,
             message: {
                 content,
-                images: imageObjectKeys.length ? imageObjectKeys : null,
+                images: uploadedImages.length ? uploadedImages : null,
             },
         },
         {
             onEvent(event) {
                 if (activeStream?.token !== streamToken) {
+                    return
+                }
+
+                if (event.event === 'vision.start') {
+                    handleVisionStartEvent(event, activeId, assistantMessageIndex)
+                    scrollToBottom()
+                    return
+                }
+
+                if (event.event === 'vision.done') {
+                    clearVisionStatus(streamToken)
+                    scrollToBottom()
                     return
                 }
 
@@ -1089,6 +1163,7 @@ async function sendMessage() {
                 }
 
                 if (event.event === 'done' || event.event === 'error') {
+                    clearVisionStatus(streamToken)
                     clearRunningToolPanels(streamToken)
                 }
             },
@@ -1118,6 +1193,7 @@ async function sendMessage() {
                 }
 
                 clearRunningToolPanels(streamToken)
+                clearVisionStatus(streamToken)
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '本次问诊未返回诊断结果。')
                 updateConversationState(activeId, (conversation) => ({
                     ...conversation,
@@ -1141,6 +1217,8 @@ async function sendMessage() {
                 }
 
                 clearRunningToolPanels(streamToken)
+                clearVisionStatus(streamToken)
+                toast.error(error.message || '问诊请求失败，请稍后重试。')
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '问诊请求失败，请稍后重试。')
                 updateConversationState(activeId, (conversation) => ({
                     ...conversation,
@@ -1383,8 +1461,29 @@ onBeforeUnmount(() => {
                                 <time>{{ formatMessageTime(message.created) }}</time>
                             </div>
 
-                            <div class="message-bubble" :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
+                            <div
+                                v-if="message.role === 'user' && message.images?.length"
+                                class="message-attachments"
+                                :class="[
+                                    `message-attachments--count-${getMessageImages(message).length}`,
+                                    { 'message-attachments--single': getMessageImages(message).length === 1 },
+                                ]"
+                                aria-label="已发送图片">
+                                <div v-for="image in getMessageImages(message)" :key="image.id" class="message-attachment">
+                                    <img v-if="image.previewUrl" :src="image.previewUrl" :alt="image.name" />
+                                    <FileImage v-else :size="24" stroke-width="1.8" />
+                                </div>
+                            </div>
+
+                            <div
+                                v-if="message.role === 'assistant' || getUserDisplayContent(message.content)"
+                                class="message-bubble"
+                                :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
                                 <template v-if="message.role === 'assistant'">
+                                    <div v-if="getVisionStatusForMessage(message)" class="vision-status" aria-live="polite">
+                                        <LoaderCircle class="vision-status__spinner" :size="15" stroke-width="2.2" />
+                                        <span>{{ getVisionStatusText(getVisionStatusForMessage(message)) }}</span>
+                                    </div>
                                     <template v-for="part in getAssistantMessageParts(message)" :key="part.id">
                                         <div v-if="part.type === 'markdown'" class="message-markdown" v-html="renderAssistantMarkdown(part.content)"></div>
                                         <div v-else class="tool-call-panels" aria-label="工具调用">
@@ -1415,19 +1514,7 @@ onBeforeUnmount(() => {
                                     </template>
                                 </template>
                                 <template v-else>
-                                    <p>{{ message.content }}</p>
-                                    <div v-if="message.images?.length" class="message-attachments" aria-label="已发送图片">
-                                        <div v-for="image in getMessageImages(message)" :key="image.id" class="message-attachment">
-                                            <div class="message-attachment__thumb">
-                                                <img v-if="image.previewUrl" :src="image.previewUrl" :alt="image.name" />
-                                                <FileImage v-else :size="18" stroke-width="2" />
-                                            </div>
-                                            <div class="message-attachment__text">
-                                                <span>{{ image.name }}</span>
-                                                <small>{{ image.objectKey || (image.size ? formatFileSize(image.size) : '已上传图片') }}</small>
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <p v-if="getUserDisplayContent(message.content)">{{ getUserDisplayContent(message.content) }}</p>
                                 </template>
                             </div>
                         </div>
@@ -2584,6 +2671,26 @@ textarea:focus-visible {
     font-size: 0.92em;
 }
 
+.vision-status {
+    display: inline-flex;
+    width: fit-content;
+    max-width: 100%;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid rgba(14, 127, 176, 0.18);
+    border-radius: calc(var(--radius) - 3px);
+    background: rgba(14, 127, 176, 0.06);
+    color: var(--ocean-blue);
+    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.2;
+}
+
+.vision-status__spinner {
+    flex: 0 0 auto;
+    animation: send-button-spin 820ms linear infinite;
+}
+
 .tool-call-panels {
     display: grid;
     gap: 8px;
@@ -2731,46 +2838,57 @@ textarea:focus-visible {
 
 .message-attachments {
     display: grid;
-    gap: 8px;
+    max-width: min(680px, 100%);
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.message-attachments--count-2,
+.message-attachments--count-4 {
+    grid-template-columns: repeat(2, 112px);
+}
+
+.message-attachments--count-3,
+.message-attachments--count-5,
+.message-attachments--count-6 {
+    grid-template-columns: repeat(3, 112px);
+}
+
+.message-attachments--count-5 .message-attachment:nth-child(4) {
+    grid-column: 2;
 }
 
 .message-attachment {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 9px;
-    border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 2px);
-    background: var(--background);
-    padding: 7px;
-}
-
-.message-attachment__thumb {
     display: inline-flex;
-    width: 42px;
-    height: 42px;
+    width: 112px;
+    height: 112px;
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 4px);
+    border-radius: 16px;
     background: var(--muted);
     color: var(--muted-foreground);
+    box-shadow: var(--shadow-sm);
 }
 
-.message-attachment__thumb img {
+.message-attachment img {
     width: 100%;
     height: 100%;
     object-fit: cover;
 }
 
-.message-attachment__text {
-    min-width: 0;
-    flex: 1;
+.message-attachments--single .message-attachment {
+    width: min(220px, 48vw);
+    height: auto;
+    aspect-ratio: 1 / 1;
 }
 
-.message-attachment span,
+.message-attachments--single .message-attachment img {
+    object-fit: contain;
+}
+
 .pending-file__text span {
     display: block;
     overflow: hidden;
@@ -2782,7 +2900,6 @@ textarea:focus-visible {
     white-space: nowrap;
 }
 
-.message-attachment small,
 .pending-file__text small {
     display: block;
     color: var(--muted-foreground);

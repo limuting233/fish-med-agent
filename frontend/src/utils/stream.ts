@@ -1,11 +1,19 @@
 import { useAuthStore } from '@/stores/auth'
 import { RequestError } from '@/utils/request'
 
+export type ChatStreamImageInput = {
+    object_key: string
+    content_type: string
+    extension: string
+    size: number
+    original_filename?: string | null
+}
+
 export type ChatStreamRequest = {
     conversation_id: number
     message: {
         content: string
-        images?: string[] | null
+        images?: ChatStreamImageInput[] | null
     }
 }
 
