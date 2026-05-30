@@ -1,10 +1,12 @@
 import http from '@/utils/request'
 
 export type ConversationMessage = {
-    role: 'user' | 'assistant'
+    role: 'user' | 'assistant' | 'tool' | (string & {})
     content: string
     created: string
     images?: (string | MessageImage)[] | null
+    tool_calls?: unknown
+    tool_call_id?: string
 }
 
 export type MessageImage = {

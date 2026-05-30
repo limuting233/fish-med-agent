@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Clock, FileImage, LoaderCircle, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -8,7 +8,7 @@ import { getCurrentUserRequest } from '@/api/auth'
 import { fetchConversationList, type Conversation, type ConversationMessage, type MessageImage } from '@/api/conversation'
 import { deleteImage, uploadImage, type UploadedImage } from '@/api/upload'
 import { useAuthStore } from '@/stores/auth'
-import { streamChat, type StreamSession } from '@/utils/stream'
+import { streamChat, type StreamEvent, type StreamSession } from '@/utils/stream'
 
 type ConversationGroup = 'today' | 'week' | 'earlier'
 
@@ -32,6 +32,56 @@ type MessageImageView = {
     objectKey?: string
     size?: number
 }
+
+type DisplayConversationMessage = ConversationMessage & {
+    role: 'user' | 'assistant'
+}
+
+type ToolCallData = {
+    tool_call_id?: string
+    name?: string
+    arguments?: unknown
+}
+
+type ToolResultData = {
+    tool_call_id?: string
+    name?: string
+    ok?: boolean
+    error?: unknown
+    result?: unknown
+}
+
+type ToolCallPanel = {
+    id: string
+    conversationId: number
+    assistantMessageIndex: number
+    anchorOffset: number
+    name: string
+    arguments?: string
+    result?: string
+    error?: string
+    status: 'running' | 'done' | 'error'
+}
+
+type StoredToolCall = {
+    id?: string
+    function?: {
+        name?: string
+        arguments?: unknown
+    }
+}
+
+type AssistantMessagePart =
+    | {
+          id: string
+          type: 'markdown'
+          content: string
+      }
+    | {
+          id: string
+          type: 'tools'
+          panels: ToolCallPanel[]
+      }
 
 const MAX_IMAGE_ATTACHMENTS = 6
 const HOME_SELECTED_CONVERSATION_SESSION_KEY = 'fish-med-agent:selected-conversation-id'
@@ -84,6 +134,7 @@ const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref('')
 const responseGenerating = ref(false)
+const toolCallPanels = ref<ToolCallPanel[]>([])
 let activeStream: {
     session: StreamSession
     conversationId: number
@@ -124,7 +175,27 @@ const activeConversationTitle = computed(() => {
     return activeConversation.value ? activeConversation.value.title.trim() : '新的鱼病问诊'
 })
 
-const activeMessages = computed(() => activeConversation.value?.messages ?? [])
+const activeMessages = computed(() => {
+    const conversation = activeConversation.value
+    const messages = conversation?.messages ?? []
+    const stream = activeStream
+
+    return messages.filter((message, index): message is DisplayConversationMessage => {
+        if (!isDisplayConversationMessage(message)) {
+            return false
+        }
+
+        if (message.role === 'user') {
+            return true
+        }
+
+        if (message.content.trim()) {
+            return true
+        }
+
+        return Boolean(responseGenerating.value && stream && stream.conversationId === conversation?.id && stream.assistantMessageIndex === index)
+    })
+})
 const imagesUploading = computed(() => activeImageUploadCount.value > 0)
 const imagesDeleting = computed(() => activeImageDeleteCount.value > 0)
 const imagesBusy = computed(() => imagesUploading.value || imagesDeleting.value)
@@ -220,8 +291,15 @@ function getConversationActiveDate(conversation: Conversation) {
     return parseDate(getMetadataDate(conversation, 'last_message_at')) ?? new Date()
 }
 
+function isDisplayConversationMessage(message: ConversationMessage): message is DisplayConversationMessage {
+    return message.role === 'user' || message.role === 'assistant'
+}
+
 function getLastMessage(messages: Conversation['messages']) {
-    return messages?.[messages.length - 1]
+    return messages
+        ?.slice()
+        .reverse()
+        .find((message) => isDisplayConversationMessage(message) && message.content.trim())
 }
 
 function getMessageContent(message?: ConversationMessage) {
@@ -230,6 +308,238 @@ function getMessageContent(message?: ConversationMessage) {
 
 function renderAssistantMarkdown(content: string) {
     return markdown.render(content || '正在分析...')
+}
+
+function getToolDisplayName(name: string) {
+    return name.trim() || '工具'
+}
+
+function getToolPanelTitle(panel: ToolCallPanel) {
+    if (panel.status === 'running') {
+        return `正在调用 ${panel.name} 工具`
+    }
+
+    return `${panel.name} 工具调用${panel.status === 'error' ? '失败' : '成功'}`
+}
+
+function stringifyToolPayload(value: unknown) {
+    if (value === undefined || value === null || value === '') {
+        return ''
+    }
+
+    if (typeof value === 'string') {
+        try {
+            return JSON.stringify(JSON.parse(value), null, 2)
+        } catch {
+            return value
+        }
+    }
+
+    return JSON.stringify(value, null, 2)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
+}
+
+function parseJsonPayload(value: string) {
+    try {
+        return JSON.parse(value)
+    } catch {
+        return value
+    }
+}
+
+function getStoredToolCalls(message?: ConversationMessage) {
+    return Array.isArray(message?.tool_calls) ? (message.tool_calls as StoredToolCall[]) : []
+}
+
+function getToolCallId(toolCall: StoredToolCall) {
+    return typeof toolCall.id === 'string' ? toolCall.id : ''
+}
+
+function getHistoricalToolPanelsForMessage(conversation: Conversation, message: DisplayConversationMessage) {
+    const messages = conversation.messages ?? []
+    const assistantMessageIndex = messages.findIndex((item) => item === message)
+
+    if (assistantMessageIndex <= 0) {
+        return []
+    }
+
+    const toolMessages: Array<{ message: ConversationMessage; index: number }> = []
+    let cursor = assistantMessageIndex - 1
+
+    while (cursor >= 0 && messages[cursor]?.role === 'tool') {
+        const toolMessage = messages[cursor]
+        if (toolMessage) {
+            toolMessages.unshift({ message: toolMessage, index: cursor })
+        }
+        cursor -= 1
+    }
+
+    if (!toolMessages.length) {
+        return []
+    }
+
+    const toolCallSource = messages[cursor]
+    const storedToolCalls = getStoredToolCalls(toolCallSource)
+
+    return toolMessages.map(({ message: toolMessage, index }) => {
+        const toolCallId = toolMessage.tool_call_id || `${toolMessage.created}-${index}`
+        const toolCall = storedToolCalls.find((item) => getToolCallId(item) === toolCallId)
+        const toolName = typeof toolCall?.function?.name === 'string' ? getToolDisplayName(toolCall.function.name) : '工具'
+        const parsedContent = parseJsonPayload(toolMessage.content)
+        const isError = isRecord(parsedContent) && typeof parsedContent.error === 'string'
+
+        return {
+            id: `history-${conversation.id}-${toolCallId}`,
+            conversationId: conversation.id,
+            assistantMessageIndex,
+            anchorOffset: 0,
+            name: toolName,
+            arguments: stringifyToolPayload(toolCall?.function?.arguments) || undefined,
+            result: isError ? undefined : stringifyToolPayload(parsedContent) || undefined,
+            error: isError ? stringifyToolPayload(parsedContent.error) || toolMessage.content : undefined,
+            status: isError ? 'error' : 'done',
+        } satisfies ToolCallPanel
+    })
+}
+
+function getToolPanelsForMessage(message: DisplayConversationMessage) {
+    if (message.role !== 'assistant') {
+        return []
+    }
+
+    const conversation = activeConversation.value
+
+    if (!conversation) {
+        return []
+    }
+
+    const historyPanels = getHistoricalToolPanelsForMessage(conversation, message)
+    const runtimePanels = toolCallPanels.value.filter((panel) => {
+        return panel.conversationId === conversation.id && conversation.messages?.[panel.assistantMessageIndex] === message
+    })
+    const panelsById = new Map<string, ToolCallPanel>()
+
+    historyPanels.forEach((panel) => panelsById.set(panel.id, panel))
+    runtimePanels.forEach((panel) => panelsById.set(panel.id, panel))
+
+    return Array.from(panelsById.values()).sort((first, second) => first.anchorOffset - second.anchorOffset)
+}
+
+function getAssistantMessageParts(message: DisplayConversationMessage): AssistantMessagePart[] {
+    const content = message.content
+    const panels = getToolPanelsForMessage(message)
+
+    if (!panels.length) {
+        return [
+            {
+                id: `${message.created}-markdown-0`,
+                type: 'markdown',
+                content,
+            },
+        ]
+    }
+
+    const parts: AssistantMessagePart[] = []
+    let cursor = 0
+    let groupIndex = 0
+
+    while (groupIndex < panels.length) {
+        const currentPanel = panels[groupIndex]
+        if (!currentPanel) {
+            break
+        }
+
+        const offset = Math.max(0, Math.min(content.length, currentPanel.anchorOffset))
+        const groupedPanels = panels.filter((panel) => panel.anchorOffset === currentPanel.anchorOffset)
+
+        if (offset > cursor) {
+            parts.push({
+                id: `${message.created}-markdown-${parts.length}`,
+                type: 'markdown',
+                content: content.slice(cursor, offset),
+            })
+        }
+
+        parts.push({
+            id: `${message.created}-tools-${groupIndex}`,
+            type: 'tools',
+            panels: groupedPanels,
+        })
+
+        cursor = offset
+        groupIndex += groupedPanels.length
+    }
+
+    if (cursor < content.length) {
+        parts.push({
+            id: `${message.created}-markdown-${parts.length}`,
+            type: 'markdown',
+            content: content.slice(cursor),
+        })
+    }
+
+    return parts
+}
+
+function upsertToolCallPanel(panel: ToolCallPanel) {
+    const index = toolCallPanels.value.findIndex((item) => item.id === panel.id && item.conversationId === panel.conversationId)
+
+    if (index === -1) {
+        toolCallPanels.value = [...toolCallPanels.value, panel]
+        return
+    }
+
+    toolCallPanels.value = toolCallPanels.value.map((item, itemIndex) => (itemIndex === index ? { ...item, ...panel } : item))
+}
+
+function handleToolCallEvent(event: StreamEvent, conversationId: number, assistantMessageIndex: number) {
+    const data = event.data as ToolCallData | null
+    const id = typeof data?.tool_call_id === 'string' && data.tool_call_id.trim() ? data.tool_call_id : createId('tool')
+    const name = typeof data?.name === 'string' ? getToolDisplayName(data.name) : '工具'
+    const args = stringifyToolPayload(data?.arguments)
+    const anchorOffset = (getConversationMessage(conversationId, assistantMessageIndex)?.content ?? '').length
+
+    upsertToolCallPanel({
+        id,
+        conversationId,
+        assistantMessageIndex,
+        anchorOffset,
+        name,
+        arguments: args || undefined,
+        status: 'running',
+    })
+}
+
+function handleToolResultEvent(event: StreamEvent, conversationId: number, assistantMessageIndex: number) {
+    const data = event.data as ToolResultData | null
+    const id = typeof data?.tool_call_id === 'string' && data.tool_call_id.trim() ? data.tool_call_id : createId('tool-result')
+    const name = typeof data?.name === 'string' ? getToolDisplayName(data.name) : '工具'
+    const error = stringifyToolPayload(data?.error)
+    const result = stringifyToolPayload(data?.result)
+    const existingPanel = toolCallPanels.value.find((panel) => panel.id === id && panel.conversationId === conversationId)
+    const anchorOffset = existingPanel?.anchorOffset ?? (getConversationMessage(conversationId, assistantMessageIndex)?.content ?? '').length
+
+    upsertToolCallPanel({
+        id,
+        conversationId,
+        assistantMessageIndex,
+        anchorOffset,
+        name,
+        result: result || undefined,
+        error: error || undefined,
+        status: data?.ok === false ? 'error' : 'done',
+    })
+}
+
+function clearRunningToolPanels(token?: string) {
+    if (token && activeStream?.token !== token) {
+        return
+    }
+
+    toolCallPanels.value = toolCallPanels.value.map((panel) => (panel.status === 'running' ? { ...panel, status: 'done' } : panel))
 }
 
 function getMetadataDate(conversation: Conversation, key: string) {
@@ -761,6 +1071,27 @@ async function sendMessage() {
             },
         },
         {
+            onEvent(event) {
+                if (activeStream?.token !== streamToken) {
+                    return
+                }
+
+                if (event.event === 'tool.call') {
+                    handleToolCallEvent(event, activeId, assistantMessageIndex)
+                    scrollToBottom()
+                    return
+                }
+
+                if (event.event === 'tool.result') {
+                    handleToolResultEvent(event, activeId, assistantMessageIndex)
+                    scrollToBottom()
+                    return
+                }
+
+                if (event.event === 'done' || event.event === 'error') {
+                    clearRunningToolPanels(streamToken)
+                }
+            },
             onMessageDelta(delta) {
                 if (activeStream?.token !== streamToken) {
                     return
@@ -786,6 +1117,7 @@ async function sendMessage() {
                     return
                 }
 
+                clearRunningToolPanels(streamToken)
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '本次问诊未返回诊断结果。')
                 updateConversationState(activeId, (conversation) => ({
                     ...conversation,
@@ -808,6 +1140,7 @@ async function sendMessage() {
                     return
                 }
 
+                clearRunningToolPanels(streamToken)
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '问诊请求失败，请稍后重试。')
                 updateConversationState(activeId, (conversation) => ({
                     ...conversation,
@@ -1046,12 +1379,41 @@ onBeforeUnmount(() => {
 
                         <div class="chat-message__content">
                             <div class="chat-message__meta">
-                                <span>{{ message.role === 'assistant' ? 'Fish Med Agent' : '你' }}</span>
+                                <span v-if="message.role === 'assistant'">Fish Med Agent</span>
                                 <time>{{ formatMessageTime(message.created) }}</time>
                             </div>
 
                             <div class="message-bubble" :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
-                                <div v-if="message.role === 'assistant'" class="message-markdown" v-html="renderAssistantMarkdown(message.content)"></div>
+                                <template v-if="message.role === 'assistant'">
+                                    <template v-for="part in getAssistantMessageParts(message)" :key="part.id">
+                                        <div v-if="part.type === 'markdown'" class="message-markdown" v-html="renderAssistantMarkdown(part.content)"></div>
+                                        <div v-else class="tool-call-panels" aria-label="工具调用">
+                                            <details
+                                                v-for="panel in part.panels"
+                                                :key="panel.id"
+                                                class="tool-call-panel"
+                                                :class="{
+                                                    'tool-call-panel--error': panel.status === 'error',
+                                                    'tool-call-panel--success': panel.status === 'done',
+                                                }">
+                                                <summary>
+                                                    <LoaderCircle v-if="panel.status === 'running'" class="tool-call-panel__spinner" :size="14" stroke-width="2.2" />
+                                                    <span>{{ getToolPanelTitle(panel) }}</span>
+                                                </summary>
+                                                <div class="tool-call-panel__body">
+                                                    <section v-if="panel.arguments">
+                                                        <strong>参数</strong>
+                                                        <pre>{{ panel.arguments }}</pre>
+                                                    </section>
+                                                    <section>
+                                                        <strong>{{ panel.status === 'error' ? '错误' : '结果' }}</strong>
+                                                        <pre>{{ panel.error || panel.result || '暂无结果内容' }}</pre>
+                                                    </section>
+                                                </div>
+                                            </details>
+                                        </div>
+                                    </template>
+                                </template>
                                 <template v-else>
                                     <p>{{ message.content }}</p>
                                     <div v-if="message.images?.length" class="message-attachments" aria-label="已发送图片">
@@ -1115,7 +1477,8 @@ onBeforeUnmount(() => {
                             @keydown="handleMessageInputKeydown"></textarea>
 
                         <button class="send-button" type="submit" :disabled="!canSend" aria-label="发送">
-                            <SendHorizontal :size="19" stroke-width="2.2" />
+                            <LoaderCircle v-if="responseGenerating" class="send-button__spinner" :size="19" stroke-width="2.2" />
+                            <SendHorizontal v-else :size="19" stroke-width="2.2" />
                         </button>
 
                         <input ref="fileInput" class="file-input" type="file" accept="image/*" multiple :disabled="imagesBusy || responseGenerating" @change="handleFileChange" />
@@ -2221,6 +2584,105 @@ textarea:focus-visible {
     font-size: 0.92em;
 }
 
+.tool-call-panels {
+    display: grid;
+    gap: 8px;
+}
+
+.tool-call-panel {
+    width: min(100%, 620px);
+    overflow: hidden;
+    border: 1px solid rgba(14, 127, 176, 0.2);
+    border-radius: calc(var(--radius) - 3px);
+    background: rgba(14, 127, 176, 0.06);
+}
+
+.tool-call-panel--error {
+    border-color: rgba(220, 38, 38, 0.24);
+    background: rgba(220, 38, 38, 0.06);
+}
+
+.tool-call-panel--success {
+    border-color: rgba(22, 163, 74, 0.24);
+    background: rgba(22, 163, 74, 0.07);
+}
+
+.tool-call-panel summary {
+    display: flex;
+    min-height: 34px;
+    align-items: center;
+    gap: 8px;
+    color: var(--ocean-blue);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1.2;
+    list-style: none;
+    padding: 8px 10px;
+}
+
+.tool-call-panel--error summary {
+    color: #dc2626;
+}
+
+.tool-call-panel--success summary {
+    color: #15803d;
+}
+
+.tool-call-panel summary::-webkit-details-marker {
+    display: none;
+}
+
+.tool-call-panel summary::after {
+    margin-left: auto;
+    color: var(--muted-foreground);
+    content: '展开';
+    font-size: 12px;
+}
+
+.tool-call-panel[open] summary::after {
+    content: '收起';
+}
+
+.tool-call-panel__spinner {
+    flex: 0 0 auto;
+    animation: send-button-spin 820ms linear infinite;
+}
+
+.tool-call-panel__body {
+    display: grid;
+    gap: 10px;
+    border-top: 1px solid rgba(14, 127, 176, 0.14);
+    background: rgba(255, 255, 255, 0.72);
+    padding: 10px;
+}
+
+.tool-call-panel__body section {
+    display: grid;
+    gap: 5px;
+}
+
+.tool-call-panel__body strong {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.2;
+}
+
+.tool-call-panel__body pre {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0;
+    border-radius: calc(var(--radius) - 5px);
+    background: var(--background);
+    color: var(--foreground);
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    padding: 9px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .message-markdown :deep(pre) {
     overflow-x: auto;
     border-radius: calc(var(--radius) - 4px);
@@ -2594,6 +3056,16 @@ textarea:focus-visible {
 .send-button:disabled {
     cursor: not-allowed;
     opacity: 0.38;
+}
+
+.send-button__spinner {
+    animation: send-button-spin 820ms linear infinite;
+}
+
+@keyframes send-button-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .file-input {
