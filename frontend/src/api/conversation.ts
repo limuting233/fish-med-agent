@@ -5,6 +5,7 @@ export type ConversationMessage = {
     content: string
     created: string
     images?: (string | MessageImage)[] | null
+    videos?: (string | MessageVideo)[] | null
     tool_calls?: unknown
     tool_call_id?: string
 }
@@ -14,6 +15,19 @@ export type MessageImage = {
     content_type?: string
     extension?: string
     size?: number
+    original_filename?: string | null
+    url?: string
+    url_expires_at?: number
+    previewUrl?: string
+    name?: string
+}
+
+export type MessageVideo = {
+    object_key?: string
+    content_type?: string
+    extension?: string
+    size?: number
+    duration_seconds?: number
     original_filename?: string | null
     url?: string
     url_expires_at?: number

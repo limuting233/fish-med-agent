@@ -1,12 +1,12 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, Clock, Copy, FileImage, Images, LoaderCircle, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, Video, X } from 'lucide-vue-next'
+import { Check, Clock, Copy, FileImage, Images, LoaderCircle, LogOut, Mic, MoreHorizontal, PanelLeft, Play, Plus, Search, SendHorizontal, Sparkles, Video, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { getCurrentUserRequest } from '@/api/auth'
-import { fetchConversationList, type Conversation, type ConversationMessage, type MessageImage } from '@/api/conversation'
-import { deleteImage, presignImages, uploadImage, type UploadedImage } from '@/api/upload'
+import { fetchConversationList, type Conversation, type ConversationMessage, type MessageImage, type MessageVideo } from '@/api/conversation'
+import { deleteImage, deleteVideo, presignImages, presignVideos, uploadImage, uploadVideo, type UploadedImage, type UploadedVideo } from '@/api/upload'
 import { useAuthStore } from '@/stores/auth'
 import { RequestError } from '@/utils/request'
 import { streamChat, type StreamEvent, type StreamSession } from '@/utils/stream'
@@ -18,11 +18,11 @@ type Attachment = {
     name: string
     size: string
     file: File
-    type: 'image'
+    type: 'image' | 'video'
     previewUrl?: string
     status?: 'pending' | 'uploading' | 'uploaded' | 'deleting'
     objectKey?: string
-    uploadedImage?: UploadedImage
+    uploadedMedia?: UploadedImage | UploadedVideo
     error?: string
 }
 
@@ -35,9 +35,28 @@ type MessageImageView = {
     size?: number
 }
 
+type MessageVideoView = {
+    id: string
+    name: string
+    previewUrl?: string
+    url?: string
+    objectKey?: string
+    size?: number
+    durationSeconds?: number
+}
+
+type MessageMediaView =
+    | (MessageImageView & {
+          type: 'image'
+      })
+    | (MessageVideoView & {
+          type: 'video'
+      })
+
 type ImagePreviewState = {
     src: string
     alt: string
+    type: 'image' | 'video'
 }
 
 type DisplayConversationMessage = ConversationMessage & {
@@ -62,9 +81,10 @@ type VisionEventData = {
     count?: number
 }
 
-type VisionStatus = {
+type MediaProcessingStatus = {
     conversationId: number
     assistantMessageIndex: number
+    kind: 'image' | 'video'
     count: number
 }
 
@@ -102,6 +122,7 @@ type AssistantMessagePart =
 
 const MAX_IMAGE_ATTACHMENTS = 6
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+const MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024
 const PRESIGN_BATCH_SIZE = 50
 const PRESIGN_REFRESH_WINDOW_MS = 60 * 1000
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
@@ -163,7 +184,7 @@ const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref('')
 const responseGenerating = ref(false)
-const activeVisionStatus = ref<VisionStatus | null>(null)
+const activeMediaProcessingStatuses = ref<MediaProcessingStatus[]>([])
 const copiedMessageKey = ref('')
 const toolCallPanels = ref<ToolCallPanel[]>([])
 let copiedMessageTimer: number | null = null
@@ -299,16 +320,28 @@ function hasFreshImageUrl(image: MessageImage) {
     return Boolean(image.url && typeof image.url_expires_at === 'number' && Date.now() + PRESIGN_REFRESH_WINDOW_MS < image.url_expires_at)
 }
 
+function hasFreshVideoUrl(video: MessageVideo) {
+    return Boolean(video.url && typeof video.url_expires_at === 'number' && Date.now() + PRESIGN_REFRESH_WINDOW_MS < video.url_expires_at)
+}
+
 function getImageObjectKey(image: string | MessageImage) {
     return typeof image === 'string' ? image : image.object_key
+}
+
+function getVideoObjectKey(video: string | MessageVideo) {
+    return typeof video === 'string' ? video : video.object_key
 }
 
 function getImageUrl(image: string | MessageImage) {
     return typeof image === 'string' ? undefined : image.previewUrl || (hasFreshImageUrl(image) ? image.url : undefined)
 }
 
+function getVideoUrl(video: string | MessageVideo) {
+    return typeof video === 'string' ? undefined : video.previewUrl || (hasFreshVideoUrl(video) ? video.url : undefined)
+}
+
 function getAttachmentPreviewSrc(attachment: Attachment) {
-    return attachment.uploadedImage?.url || attachment.previewUrl
+    return attachment.uploadedMedia?.url || attachment.previewUrl
 }
 
 function openImagePreview(src: string | undefined, alt = '图片') {
@@ -319,6 +352,19 @@ function openImagePreview(src: string | undefined, alt = '图片') {
     imagePreview.value = {
         src,
         alt,
+        type: 'image',
+    }
+}
+
+function openVideoPreview(src: string | undefined, alt = '视频') {
+    if (!src) {
+        return
+    }
+
+    imagePreview.value = {
+        src,
+        alt,
+        type: 'video',
     }
 }
 
@@ -355,7 +401,8 @@ function markMessageImageFailed(imageId: string) {
 }
 
 async function hydrateConversationImageUrls(list: Conversation[]) {
-    const keys = new Set<string>()
+    const imageKeys = new Set<string>()
+    const videoKeys = new Set<string>()
 
     list.forEach((conversation) => {
         ;(conversation.messages ?? []).forEach((message) => {
@@ -365,23 +412,42 @@ async function hydrateConversationImageUrls(list: Conversation[]) {
                     return
                 }
 
-                keys.add(objectKey)
+                imageKeys.add(objectKey)
+            })
+            ;(message.videos ?? []).forEach((video) => {
+                const objectKey = getVideoObjectKey(video)
+                if (!objectKey || getVideoUrl(video)) {
+                    return
+                }
+
+                videoKeys.add(objectKey)
             })
         })
     })
 
-    if (!keys.size) {
+    if (!imageKeys.size && !videoKeys.size) {
         return list
     }
 
     const urlByKey = new Map<string, string>()
     const expiresAtByKey = new Map<string, number>()
-    const objectKeys = Array.from(keys)
 
     try {
-        for (let index = 0; index < objectKeys.length; index += PRESIGN_BATCH_SIZE) {
-            const batch = objectKeys.slice(index, index + PRESIGN_BATCH_SIZE)
+        const imageObjectKeys = Array.from(imageKeys)
+        for (let index = 0; index < imageObjectKeys.length; index += PRESIGN_BATCH_SIZE) {
+            const batch = imageObjectKeys.slice(index, index + PRESIGN_BATCH_SIZE)
             const data = await presignImages(batch)
+
+            Object.entries(data.urls).forEach(([objectKey, url]) => {
+                urlByKey.set(objectKey, url)
+                expiresAtByKey.set(objectKey, data.expires_at)
+            })
+        }
+
+        const videoObjectKeys = Array.from(videoKeys)
+        for (let index = 0; index < videoObjectKeys.length; index += PRESIGN_BATCH_SIZE) {
+            const batch = videoObjectKeys.slice(index, index + PRESIGN_BATCH_SIZE)
+            const data = await presignVideos(batch)
 
             Object.entries(data.urls).forEach(([objectKey, url]) => {
                 urlByKey.set(objectKey, url)
@@ -420,6 +486,29 @@ async function hydrateConversationImageUrls(list: Conversation[]) {
                             url_expires_at: expiresAtByKey.get(objectKey),
                         }
                     }) ?? message.images,
+                videos:
+                    message.videos?.map((video) => {
+                        const objectKey = getVideoObjectKey(video)
+                        const url = objectKey ? urlByKey.get(objectKey) : undefined
+
+                        if (!objectKey || !url) {
+                            return video
+                        }
+
+                        if (typeof video === 'string') {
+                            return {
+                                object_key: objectKey,
+                                url,
+                                url_expires_at: expiresAtByKey.get(objectKey),
+                            } satisfies MessageVideo
+                        }
+
+                        return {
+                            ...video,
+                            url,
+                            url_expires_at: expiresAtByKey.get(objectKey),
+                        }
+                    }) ?? message.videos,
             })) ?? conversation.messages,
     }))
 }
@@ -482,7 +571,7 @@ function getMessageContent(message?: ConversationMessage) {
 }
 
 function getUserDisplayContent(content: string) {
-    return content.replace(/\n*\[用户附图\][\s\S]*$/u, '').trim()
+    return content.replace(/\n*\[用户附(?:图|视频)\][\s\S]*$/u, '').trim()
 }
 
 function getMessageCopyText(message: DisplayConversationMessage) {
@@ -557,8 +646,12 @@ function getToolPanelTitle(panel: ToolCallPanel) {
     return `${panel.name} 工具调用${panel.status === 'error' ? '失败' : '成功'}`
 }
 
-function getVisionStatusText(status: VisionStatus | null) {
-    return status && status.count > 0 ? `正在分析图片（${status.count} 张）` : '正在分析图片'
+function getMediaProcessingStatusText(status: MediaProcessingStatus) {
+    if (status.kind === 'video') {
+        return status.count > 0 ? `正在分析视频（${status.count} 段）` : '正在分析视频'
+    }
+
+    return status.count > 0 ? `正在分析图片（${status.count} 张）` : '正在分析图片'
 }
 
 function stringifyToolPayload(value: unknown) {
@@ -667,26 +760,27 @@ function getToolPanelsForMessage(message: DisplayConversationMessage) {
     return Array.from(panelsById.values()).sort((first, second) => first.anchorOffset - second.anchorOffset)
 }
 
-function getVisionStatusForMessage(message: DisplayConversationMessage) {
+function getMediaProcessingStatusesForMessage(message: DisplayConversationMessage) {
     if (message.role !== 'assistant') {
-        return null
+        return []
     }
 
     const conversation = activeConversation.value
-    const status = activeVisionStatus.value
 
-    if (!conversation || !status || status.conversationId !== conversation.id) {
-        return null
+    if (!conversation) {
+        return []
     }
 
-    return conversation.messages?.[status.assistantMessageIndex] === message ? status : null
+    return activeMediaProcessingStatuses.value.filter((status) => {
+        return status.conversationId === conversation.id && conversation.messages?.[status.assistantMessageIndex] === message
+    })
 }
 
 function getAssistantMessageParts(message: DisplayConversationMessage): AssistantMessagePart[] {
     const content = message.content
     const panels = getToolPanelsForMessage(message)
 
-    if (!content && !panels.length && getVisionStatusForMessage(message)) {
+    if (!content && !panels.length && getMediaProcessingStatusesForMessage(message).length) {
         return []
     }
 
@@ -800,23 +894,29 @@ function clearRunningToolPanels(token?: string) {
     toolCallPanels.value = toolCallPanels.value.map((panel) => (panel.status === 'running' ? { ...panel, status: 'done' } : panel))
 }
 
-function handleVisionStartEvent(event: StreamEvent, conversationId: number, assistantMessageIndex: number) {
+function handleMediaProcessingStartEvent(kind: 'image' | 'video', event: StreamEvent, conversationId: number, assistantMessageIndex: number) {
     const data = event.data as VisionEventData | null
     const count = typeof data?.count === 'number' ? data.count : 0
 
-    activeVisionStatus.value = {
-        conversationId,
-        assistantMessageIndex,
-        count,
-    }
+    activeMediaProcessingStatuses.value = [
+        ...activeMediaProcessingStatuses.value.filter((status) => {
+            return !(status.conversationId === conversationId && status.assistantMessageIndex === assistantMessageIndex && status.kind === kind)
+        }),
+        {
+            conversationId,
+            assistantMessageIndex,
+            kind,
+            count,
+        },
+    ]
 }
 
-function clearVisionStatus(token?: string) {
+function clearMediaProcessingStatus(kind?: 'image' | 'video', token?: string) {
     if (token && activeStream?.token !== token) {
         return
     }
 
-    activeVisionStatus.value = null
+    activeMediaProcessingStatuses.value = kind ? activeMediaProcessingStatuses.value.filter((status) => status.kind !== kind) : []
 }
 
 function getMetadataDate(conversation: Conversation, key: string) {
@@ -1005,13 +1105,18 @@ function openFilePicker(acceptMode: 'image' | 'video' = 'image') {
 function handleFileChange(event: Event) {
     const input = event.target as HTMLInputElement
     const selectedFiles = Array.from(input.files ?? [])
-    const videoFiles = selectedFiles.filter(isSupportedVideoFile)
-    const imageFiles = selectedFiles.filter((file) => isSupportedImageFile(file) && file.size <= MAX_IMAGE_SIZE_BYTES)
     const availableSlots = Math.max(0, MAX_IMAGE_ATTACHMENTS - pendingAttachments.value.length)
+    const supportedFiles = selectedFiles.filter((file) => {
+        if (isSupportedImageFile(file)) {
+            return file.size <= MAX_IMAGE_SIZE_BYTES
+        }
 
-    if (videoFiles.length) {
-        toast.warning('已识别到视频文件，但当前后端尚未提供视频上传接口')
-    }
+        if (isSupportedVideoFile(file)) {
+            return file.size <= MAX_VIDEO_SIZE_BYTES
+        }
+
+        return false
+    })
 
     if (selectedFiles.some((file) => !isSupportedImageFile(file) && !isSupportedVideoFile(file))) {
         toast.warning('仅支持 jpg/png/webp/gif 图片和 mp4/webm/mov 视频')
@@ -1021,17 +1126,21 @@ function handleFileChange(event: Event) {
         toast.warning('单张图片最大 10MB')
     }
 
-    if (imageFiles.length > availableSlots) {
-        toast.warning(`最多上传 ${MAX_IMAGE_ATTACHMENTS} 张图片`)
+    if (selectedFiles.some((file) => isSupportedVideoFile(file) && file.size > MAX_VIDEO_SIZE_BYTES)) {
+        toast.warning('单段视频最大 50MB')
     }
 
-    imageFiles.slice(0, availableSlots).forEach((file) => {
+    if (supportedFiles.length > availableSlots) {
+        toast.warning(`最多上传 ${MAX_IMAGE_ATTACHMENTS} 个附件`)
+    }
+
+    supportedFiles.slice(0, availableSlots).forEach((file) => {
         const attachment: Attachment = {
             id: createId('attachment'),
             name: file.name,
             size: formatFileSize(file.size),
             file,
-            type: 'image',
+            type: isSupportedVideoFile(file) ? 'video' : 'image',
             previewUrl: URL.createObjectURL(file),
             status: 'pending',
         }
@@ -1060,16 +1169,21 @@ async function removePendingAttachment(attachmentId: string) {
     updatePendingAttachment(attachment.id, { status: 'deleting', error: undefined })
 
     try {
-        await deleteImage(attachment.objectKey)
+        if (attachment.type === 'video') {
+            await deleteVideo(attachment.objectKey)
+        } else {
+            await deleteImage(attachment.objectKey)
+        }
         removePendingAttachmentLocally(attachment)
     } catch (error) {
-        if (error instanceof RequestError && error.code === 404002) {
+        if (error instanceof RequestError && (error.code === 404002 || error.code === 404003)) {
             removePendingAttachmentLocally(attachment)
             return
         }
 
-        const message = error instanceof Error ? error.message : '图片删除失败'
-        toast.error(message || '图片删除失败')
+        const fallbackMessage = attachment.type === 'video' ? '视频删除失败' : '图片删除失败'
+        const message = error instanceof Error ? error.message : fallbackMessage
+        toast.error(message || fallbackMessage)
         updatePendingAttachment(attachment.id, {
             status: 'uploaded',
             error: undefined,
@@ -1143,15 +1257,15 @@ async function uploadAttachment(attachment: Attachment) {
     updatePendingAttachment(attachment.id, { status: 'uploading' })
 
     try {
-        const uploadedImage = await uploadImage(attachment.file)
+        const uploadedMedia = attachment.type === 'video' ? await uploadVideo(attachment.file) : await uploadImage(attachment.file)
         if (!pendingAttachments.value.some((item) => item.id === attachment.id)) {
             return
         }
 
         updatePendingAttachment(attachment.id, {
             status: 'uploaded',
-            objectKey: uploadedImage.object_key,
-            uploadedImage,
+            objectKey: uploadedMedia.object_key,
+            uploadedMedia,
             error: undefined,
         })
     } catch (error) {
@@ -1159,9 +1273,10 @@ async function uploadAttachment(attachment: Attachment) {
             return
         }
 
-        const message = error instanceof Error ? error.message : '图片上传失败'
+        const fallbackMessage = attachment.type === 'video' ? '视频上传失败' : '图片上传失败'
+        const message = error instanceof Error ? error.message : fallbackMessage
         removePendingAttachmentLocally(attachment)
-        toast.error(message || '图片上传失败')
+        toast.error(message || fallbackMessage)
     } finally {
         activeImageUploadCount.value = Math.max(0, activeImageUploadCount.value - 1)
     }
@@ -1206,6 +1321,25 @@ function createMessageImages(attachments: Attachment[], uploadedImages: Uploaded
     })
 }
 
+function createMessageVideos(attachments: Attachment[], uploadedVideos: UploadedVideo[]): MessageVideo[] {
+    return attachments.map((attachment, index) => {
+        const uploadedVideo = uploadedVideos[index]
+
+        return {
+            object_key: uploadedVideo?.object_key,
+            content_type: uploadedVideo?.content_type,
+            extension: uploadedVideo?.extension,
+            size: uploadedVideo?.size ?? attachment.file.size,
+            duration_seconds: uploadedVideo?.duration_seconds,
+            original_filename: uploadedVideo?.original_filename ?? attachment.name,
+            url: uploadedVideo?.url,
+            url_expires_at: uploadedVideo?.url_expires_at,
+            previewUrl: attachment.previewUrl,
+            name: attachment.name,
+        }
+    })
+}
+
 function getMessageImages(message: ConversationMessage): MessageImageView[] {
     return (message.images ?? []).map((image, index) => {
         if (typeof image === 'string') {
@@ -1228,6 +1362,42 @@ function getMessageImages(message: ConversationMessage): MessageImageView[] {
     })
 }
 
+function getMessageVideos(message: ConversationMessage): MessageVideoView[] {
+    return (message.videos ?? []).map((video, index) => {
+        if (typeof video === 'string') {
+            return {
+                id: `${message.created}-video-${index}`,
+                name: video.split('/').pop() || '视频',
+                objectKey: video,
+            }
+        }
+
+        const objectKey = video.object_key
+        return {
+            id: `${message.created}-video-${index}`,
+            name: video.name || video.original_filename || objectKey?.split('/').pop() || '视频',
+            previewUrl: video.previewUrl,
+            url: getVideoUrl(video),
+            objectKey,
+            size: video.size,
+            durationSeconds: video.duration_seconds,
+        }
+    })
+}
+
+function getMessageMedia(message: ConversationMessage): MessageMediaView[] {
+    return [
+        ...getMessageImages(message).map((image) => ({
+            ...image,
+            type: 'image' as const,
+        })),
+        ...getMessageVideos(message).map((video) => ({
+            ...video,
+            type: 'video' as const,
+        })),
+    ]
+}
+
 function revokeConversationPreviewUrls() {
     conversations.value.forEach((conversation) => {
         const messages = conversation.messages ?? []
@@ -1238,6 +1408,12 @@ function revokeConversationPreviewUrls() {
             images.forEach((image) => {
                 if (typeof image !== 'string' && image.previewUrl) {
                     URL.revokeObjectURL(image.previewUrl)
+                }
+            })
+
+            ;(message.videos ?? []).forEach((video) => {
+                if (typeof video !== 'string' && video.previewUrl) {
+                    URL.revokeObjectURL(video.previewUrl)
                 }
             })
         })
@@ -1328,7 +1504,7 @@ function abortActiveStream(fallbackText?: string) {
 
     const { session, conversationId, assistantMessageIndex } = activeStream
     finalizeAssistantMessage(conversationId, assistantMessageIndex, fallbackText)
-    clearVisionStatus()
+    clearMediaProcessingStatus()
     session.abort()
     activeStream = null
     responseGenerating.value = false
@@ -1341,8 +1517,11 @@ async function sendMessage() {
 
     closeAttachmentMenu()
     const content = draftMessage.value.trim()
-    const attachmentsToSend = pendingAttachments.value.filter((attachment) => attachment.status === 'uploaded' && attachment.uploadedImage)
-    const uploadedImages = attachmentsToSend.map((attachment) => attachment.uploadedImage as UploadedImage)
+    const attachmentsToSend = pendingAttachments.value.filter((attachment) => attachment.status === 'uploaded' && attachment.uploadedMedia)
+    const imageAttachmentsToSend = attachmentsToSend.filter((attachment) => attachment.type === 'image')
+    const videoAttachmentsToSend = attachmentsToSend.filter((attachment) => attachment.type === 'video')
+    const uploadedImages = imageAttachmentsToSend.map((attachment) => attachment.uploadedMedia as UploadedImage)
+    const uploadedVideos = videoAttachmentsToSend.map((attachment) => attachment.uploadedMedia as UploadedVideo)
 
     const existingConversation = conversations.value.find((conversation) => conversation.id === selectedConversationId.value)
     const activeConversationItem = existingConversation ?? createPendingConversation()
@@ -1357,7 +1536,8 @@ async function sendMessage() {
     const nowIso = now.toISOString()
     const assistantMessageIndex = currentMessages.length + 1
     const streamToken = createId('stream')
-    const messageImages = createMessageImages(attachmentsToSend, uploadedImages)
+    const messageImages = createMessageImages(imageAttachmentsToSend, uploadedImages)
+    const messageVideos = createMessageVideos(videoAttachmentsToSend, uploadedVideos)
     const streamConversationId = existingConversation ? activeConversationItem.id : 0
 
     updateConversationState(activeId, (conversation) => ({
@@ -1370,6 +1550,7 @@ async function sendMessage() {
                 content: content,
                 created: nowIso,
                 images: messageImages.length ? messageImages : null,
+                videos: messageVideos.length ? messageVideos : null,
             },
             {
                 role: 'assistant',
@@ -1395,6 +1576,7 @@ async function sendMessage() {
             message: {
                 content,
                 images: uploadedImages.length ? uploadedImages : null,
+                videos: uploadedVideos.length ? uploadedVideos : null,
             },
         },
         {
@@ -1404,13 +1586,25 @@ async function sendMessage() {
                 }
 
                 if (event.event === 'vision.start') {
-                    handleVisionStartEvent(event, activeId, assistantMessageIndex)
+                    handleMediaProcessingStartEvent('image', event, activeId, assistantMessageIndex)
                     scrollToBottom()
                     return
                 }
 
                 if (event.event === 'vision.done') {
-                    clearVisionStatus(streamToken)
+                    clearMediaProcessingStatus('image', streamToken)
+                    scrollToBottom()
+                    return
+                }
+
+                if (event.event === 'video.start') {
+                    handleMediaProcessingStartEvent('video', event, activeId, assistantMessageIndex)
+                    scrollToBottom()
+                    return
+                }
+
+                if (event.event === 'video.done') {
+                    clearMediaProcessingStatus('video', streamToken)
                     scrollToBottom()
                     return
                 }
@@ -1428,7 +1622,7 @@ async function sendMessage() {
                 }
 
                 if (event.event === 'done' || event.event === 'error') {
-                    clearVisionStatus(streamToken)
+                    clearMediaProcessingStatus(undefined, streamToken)
                     clearRunningToolPanels(streamToken)
                 }
             },
@@ -1458,7 +1652,7 @@ async function sendMessage() {
                 }
 
                 clearRunningToolPanels(streamToken)
-                clearVisionStatus(streamToken)
+                clearMediaProcessingStatus(undefined, streamToken)
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '本次问诊未返回诊断结果。')
                 updateConversationState(activeId, (conversation) => ({
                     ...conversation,
@@ -1482,7 +1676,7 @@ async function sendMessage() {
                 }
 
                 clearRunningToolPanels(streamToken)
-                clearVisionStatus(streamToken)
+                clearMediaProcessingStatus(undefined, streamToken)
                 toast.error(error.message || '问诊请求失败，请稍后重试。')
                 finalizeAssistantMessage(activeId, assistantMessageIndex, '问诊请求失败，请稍后重试。')
                 updateConversationState(activeId, (conversation) => ({
@@ -1637,11 +1831,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="imagePreview" class="image-preview-layer" role="presentation" @click="closeImagePreview">
-            <section class="image-preview-dialog" role="dialog" aria-modal="true" aria-label="图片预览" @click.stop>
+            <section class="image-preview-dialog" role="dialog" aria-modal="true" :aria-label="imagePreview.type === 'video' ? '视频预览' : '图片预览'" @click.stop>
                 <button class="image-preview-close" type="button" aria-label="关闭图片预览" @click="closeImagePreview">
                     <X :size="20" stroke-width="2.4" />
                 </button>
-                <img :src="imagePreview.src" :alt="imagePreview.alt" />
+                <img v-if="imagePreview.type === 'image'" :src="imagePreview.src" :alt="imagePreview.alt" />
+                <video v-else :src="imagePreview.src" :aria-label="imagePreview.alt" controls autoplay playsinline></video>
             </section>
         </div>
 
@@ -1742,21 +1937,37 @@ onBeforeUnmount(() => {
 
                         <div class="chat-message__content">
                             <div
-                                v-if="message.role === 'user' && message.images?.length"
+                                v-if="message.role === 'user' && getMessageMedia(message).length"
                                 class="message-attachments"
                                 :class="[
-                                    `message-attachments--count-${getMessageImages(message).length}`,
-                                    { 'message-attachments--single': getMessageImages(message).length === 1 },
+                                    `message-attachments--count-${getMessageMedia(message).length}`,
+                                    { 'message-attachments--single': getMessageMedia(message).length === 1 },
                                 ]"
-                                aria-label="已发送图片">
-                                <div v-for="image in getMessageImages(message)" :key="image.id" class="message-attachment">
-                                    <img
-                                        v-if="(image.previewUrl || image.url) && !failedMessageImageIds.has(image.id)"
-                                        :src="image.previewUrl || image.url"
-                                        :alt="image.name"
-                                        @click="openImagePreview(image.previewUrl || image.url, image.name)"
-                                        @error="markMessageImageFailed(image.id)" />
-                                    <FileImage v-else :size="24" stroke-width="1.8" />
+                                aria-label="已发送媒体">
+                                <div v-for="media in getMessageMedia(message)" :key="media.id" class="message-attachment" :class="{ 'message-attachment--video': media.type === 'video' }">
+                                    <template v-if="media.type === 'image'">
+                                        <img
+                                            v-if="(media.previewUrl || media.url) && !failedMessageImageIds.has(media.id)"
+                                            :src="media.previewUrl || media.url"
+                                            :alt="media.name"
+                                            @click="openImagePreview(media.previewUrl || media.url, media.name)"
+                                            @error="markMessageImageFailed(media.id)" />
+                                        <FileImage v-else :size="24" stroke-width="1.8" />
+                                    </template>
+                                    <template v-else>
+                                        <video
+                                            v-if="(media.previewUrl || media.url) && !failedMessageImageIds.has(media.id)"
+                                            :src="media.previewUrl || media.url"
+                                            :aria-label="media.name"
+                                            preload="metadata"
+                                            playsinline
+                                            @click="openVideoPreview(media.previewUrl || media.url, media.name)"
+                                            @error="markMessageImageFailed(media.id)"></video>
+                                        <span v-if="(media.previewUrl || media.url) && !failedMessageImageIds.has(media.id)" class="video-play-badge" aria-hidden="true">
+                                            <Play :size="20" fill="currentColor" stroke-width="2.4" />
+                                        </span>
+                                        <Video v-else :size="24" stroke-width="1.8" />
+                                    </template>
                                 </div>
                             </div>
 
@@ -1765,9 +1976,9 @@ onBeforeUnmount(() => {
                                 class="message-bubble"
                                 :class="{ 'message-bubble--pending': message.role === 'assistant' && !message.content }">
                                 <template v-if="message.role === 'assistant'">
-                                    <div v-if="getVisionStatusForMessage(message)" class="vision-status" aria-live="polite">
+                                    <div v-for="status in getMediaProcessingStatusesForMessage(message)" :key="status.kind" class="vision-status" aria-live="polite">
                                         <LoaderCircle class="vision-status__spinner" :size="15" stroke-width="2.2" />
-                                        <span>{{ getVisionStatusText(getVisionStatusForMessage(message)) }}</span>
+                                        <span>{{ getMediaProcessingStatusText(status) }}</span>
                                     </div>
                                     <template v-for="part in getAssistantMessageParts(message)" :key="part.id">
                                         <div v-if="part.type === 'markdown'" class="message-markdown" v-html="renderAssistantMarkdown(part.content)"></div>
@@ -1835,12 +2046,23 @@ onBeforeUnmount(() => {
                             }">
                             <div class="pending-file__preview">
                                 <img
-                                    v-if="getAttachmentPreviewSrc(attachment)"
+                                    v-if="attachment.type === 'image' && getAttachmentPreviewSrc(attachment)"
                                     :src="getAttachmentPreviewSrc(attachment)"
                                     :alt="attachment.name"
                                     @click="openImagePreview(getAttachmentPreviewSrc(attachment), attachment.name)" />
-                                <FileImage v-else :size="18" stroke-width="2" />
-                                <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="图片处理中"></span>
+                                <video
+                                    v-else-if="attachment.type === 'video' && getAttachmentPreviewSrc(attachment)"
+                                    :src="getAttachmentPreviewSrc(attachment)"
+                                    :aria-label="attachment.name"
+                                    muted
+                                    playsinline
+                                    preload="metadata"
+                                    @click="openVideoPreview(getAttachmentPreviewSrc(attachment), attachment.name)"></video>
+                                <span v-if="attachment.type === 'video' && getAttachmentPreviewSrc(attachment)" class="video-play-badge" aria-hidden="true">
+                                    <Play :size="20" fill="currentColor" stroke-width="2.4" />
+                                </span>
+                                <FileImage v-if="!getAttachmentPreviewSrc(attachment)" :size="18" stroke-width="2" />
+                                <span v-if="attachment.status === 'pending' || attachment.status === 'uploading' || attachment.status === 'deleting'" class="pending-file__spinner" aria-label="附件处理中"></span>
                                 <button v-if="attachment.status === 'uploaded'" type="button" :aria-label="`移除 ${attachment.name}`" @click="removePendingAttachment(attachment.id)">
                                     <X :size="14" stroke-width="2.4" />
                                 </button>
@@ -2244,7 +2466,8 @@ textarea:focus-visible {
     justify-content: center;
 }
 
-.image-preview-dialog img {
+.image-preview-dialog img,
+.image-preview-dialog video {
     display: block;
     width: auto;
     height: auto;
@@ -2253,6 +2476,10 @@ textarea:focus-visible {
     border-radius: calc(var(--radius) - 2px);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
     object-fit: contain;
+}
+
+.image-preview-dialog video {
+    background: #000;
 }
 
 .image-preview-close {
@@ -2281,7 +2508,8 @@ textarea:focus-visible {
         max-height: calc(100vh - 76px);
     }
 
-    .image-preview-dialog img {
+    .image-preview-dialog img,
+    .image-preview-dialog video {
         max-height: calc(100vh - 76px);
     }
 }
@@ -3299,6 +3527,7 @@ textarea:focus-visible {
 }
 
 .message-attachment {
+    position: relative;
     display: inline-flex;
     width: 112px;
     height: 112px;
@@ -3320,14 +3549,39 @@ textarea:focus-visible {
     object-fit: cover;
 }
 
+.message-attachment video {
+    width: 100%;
+    height: 100%;
+    cursor: zoom-in;
+    object-fit: cover;
+}
+
 .message-attachments--single .message-attachment {
     width: min(220px, 48vw);
     height: auto;
     aspect-ratio: 1 / 1;
 }
 
-.message-attachments--single .message-attachment img {
+.message-attachments--single .message-attachment img,
+.message-attachments--single .message-attachment video {
     object-fit: contain;
+}
+
+.video-play-badge {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    z-index: 1;
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(9, 9, 11, 0.72);
+    color: #fff;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
 }
 
 .pending-file__text span {
@@ -3500,11 +3754,19 @@ textarea:focus-visible {
     box-shadow: var(--shadow-sm);
 }
 
-.pending-file__preview img {
+.pending-file__preview img,
+.pending-file__preview video {
     width: 100%;
     height: 100%;
-    cursor: zoom-in;
     object-fit: cover;
+}
+
+.pending-file__preview img {
+    cursor: zoom-in;
+}
+
+.pending-file__preview video {
+    cursor: zoom-in;
 }
 
 .pending-file__spinner {

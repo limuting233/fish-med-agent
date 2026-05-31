@@ -6,9 +6,12 @@ from fish_med_agent.schemas.response import ApiResponse, success_response
 from fish_med_agent.schemas.upload import (
     DeleteImageRequest,
     DeleteImageResponse,
+    DeleteVideoRequest,
+    DeleteVideoResponse,
     PresignRequest,
     PresignResponse,
     UploadImageResponse,
+    UploadVideoResponse,
 )
 from fish_med_agent.service.upload_service import UploadService
 
@@ -75,6 +78,68 @@ async def presign_image_urls(
     )
 
 
+@router.post("/video", response_model=ApiResponse[UploadVideoResponse])
+async def upload_video(
+        http_request: Request,
+        file: UploadFile = File(..., description="待上传的视频文件"),
+        current_user_id: int = Depends(get_current_user_id),
+):
+    """
+    上传单段视频到 MinIO 对象存储。
+
+    限制：
+    - 类型：mp4 / webm / mov（按 magic number 校验，不信 Content-Type）
+    - 大小：最大 50MB
+    - 时长：最大 30 秒（服务端 ffmpeg.probe 测量）
+    - 鉴权：必须携带有效 access token
+
+    后端流程：magic number 校验 → 写入临时文件 → ffmpeg.probe 取 duration →
+    通过则上传到 MinIO videos/ 目录 → 同步签 presigned URL 返回。
+
+    Returns:
+        UploadVideoResponse:
+            object_key / content_type / extension / size / duration_seconds /
+            original_filename / url / url_expires_at
+    """
+    request_id = getattr(http_request.state, "request_id")
+    upload_service = UploadService()
+    response = await upload_service.upload_video(current_user_id, file)
+    return success_response(
+        request_id=request_id,
+        data=response,
+    )
+
+
+@router.post("/video/presign", response_model=ApiResponse[PresignResponse])
+async def presign_video_urls(
+        http_request: Request,
+        body: PresignRequest,
+        current_user_id: int = Depends(get_current_user_id),
+):
+    """
+    批量为已有视频 object_key 生成 presigned URL，供历史会话回显视频用。
+
+    与 /upload/image/presign 行为完全对称，差别仅在语义上分流前端调用；
+    底层 service 同时接受 images/ 和 videos/ 两类前缀，单接口也能混签，
+    但建议前端按内容类型分别调用以便日志区分。
+
+    Returns:
+        PresignResponse:
+            urls: dict[object_key, url]
+            expires_at: URL 过期时间，UTC epoch 毫秒时间戳
+    """
+    request_id = getattr(http_request.state, "request_id")
+    upload_service = UploadService()
+    urls, expires_at = await upload_service.generate_presigned_urls(body.object_keys)
+    logger.info(
+        f"user {current_user_id} presigned {len(urls)}/{len(body.object_keys)} video keys"
+    )
+    return success_response(
+        request_id=request_id,
+        data=PresignResponse(urls=urls, expires_at=expires_at),
+    )
+
+
 @router.delete("/image", response_model=ApiResponse[DeleteImageResponse])
 async def delete_image(
         http_request: Request,
@@ -98,4 +163,30 @@ async def delete_image(
     return success_response(
         request_id=request_id,
         data=DeleteImageResponse(object_key=deleted_key),
+    )
+
+
+@router.delete("/video", response_model=ApiResponse[DeleteVideoResponse])
+async def delete_video(
+        http_request: Request,
+        body: DeleteVideoRequest,
+        current_user_id: int = Depends(get_current_user_id),
+):
+    """
+    删除单段视频（按 object_key）。
+
+    - object_key：上传接口返回的那个 key，必须在 videos/ 目录下
+    - 鉴权：必须携带有效 access token
+    - 对象不存在返回 404003；key 非法返回 400004
+
+    Returns:
+        DeleteVideoResponse:
+            - object_key: 被删除的 object_key
+    """
+    request_id = getattr(http_request.state, "request_id")
+    upload_service = UploadService()
+    deleted_key = await upload_service.delete_video(current_user_id, body.object_key)
+    return success_response(
+        request_id=request_id,
+        data=DeleteVideoResponse(object_key=deleted_key),
     )

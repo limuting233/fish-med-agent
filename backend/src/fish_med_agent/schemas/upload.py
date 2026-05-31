@@ -21,6 +21,28 @@ class UploadImageResponse(BaseModel):
     )
 
 
+class UploadVideoResponse(BaseModel):
+    """
+    单个视频上传结果。
+
+    与 UploadImageResponse 字段尽量对齐，方便前端用同一套数据结构展示；
+    额外多一个 `duration_seconds` 字段，由后端 ffmpeg.probe 测得。
+    """
+
+    object_key: str = Field(..., description="对象存储中的 key")
+    content_type: str = Field(..., description="MIME 类型，例如 video/mp4")
+    extension: str = Field(..., description="文件扩展名，例如 mp4")
+    size: int = Field(..., description="文件大小，单位字节")
+    duration_seconds: float = Field(
+        ..., description="视频时长（秒），后端 ffmpeg.probe 测得"
+    )
+    original_filename: str | None = Field(None, description="客户端上传时的原始文件名")
+    url: str = Field(..., description="可直接 <video src> 访问的预签名 URL")
+    url_expires_at: int = Field(
+        ..., description="预签名 URL 的过期时间，UTC epoch 毫秒时间戳"
+    )
+
+
 class DeleteImageRequest(BaseModel):
     """
     删除单张图片请求。
@@ -32,6 +54,22 @@ class DeleteImageRequest(BaseModel):
 class DeleteImageResponse(BaseModel):
     """
     删除单张图片响应。
+    """
+
+    object_key: str = Field(..., description="被删除的 object_key")
+
+
+class DeleteVideoRequest(BaseModel):
+    """
+    删除单段视频请求。
+    """
+
+    object_key: str = Field(..., min_length=1, description="上传成功后返回的 object_key")
+
+
+class DeleteVideoResponse(BaseModel):
+    """
+    删除单段视频响应。
     """
 
     object_key: str = Field(..., description="被删除的 object_key")

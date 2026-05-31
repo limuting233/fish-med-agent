@@ -12,7 +12,8 @@ from fish_med_agent.core.config import settings
 from fish_med_agent.core.logging import get_logger
 from fish_med_agent.models import Conversation
 from fish_med_agent.repositories.conversation_repo import ConversationRepo
-from fish_med_agent.schemas.chat import ChatRequest, ImageInput
+from fish_med_agent.schemas.chat import ChatRequest, ImageInput, VideoInput
+from fish_med_agent.service.video_service import VideoDescription, video_service
 from fish_med_agent.service.vision_service import vision_service
 
 logger = get_logger(__name__)
@@ -45,6 +46,8 @@ class ChatService:
 
         SSE 事件类型：
         - start: 响应开始
+        - vision.start / vision.done: 图片识别开始/结束（仅带图时） {count}
+        - video.start / video.done: 视频识别开始/结束（仅带视频时） {count}
         - message.delta: 文本内容增量 {content}
         - tool.call: 工具调用开始 {tool_call_id, name, arguments}
         - tool.result: 工具调用完成 {tool_call_id, name, ok, error?}
@@ -67,28 +70,53 @@ class ChatService:
 
         logger.info(
             f"chat start: conv={exist_conversation.id} "
-            f"images={len(message.images or [])}"
+            f"images={len(message.images or [])} videos={len(message.videos or [])}"
         )
 
         try:
             yield _sse(event="start")
 
-            # 前置 transform：若带图，先调 vision 把图转中文描述拼进 content
+            # 前置 transform：若带图或视频，先并行跑 vision 把媒体转描述拼进 content
             # —— 后续 tool-use 循环里 DeepSeek 只看到融合后的纯文本
             user_content = message.content
-            if message.images:
-                yield _sse(
-                    event="vision.start",
-                    data={"count": len(message.images)},
+            image_descs: list[str] = []
+            video_descs: list[VideoDescription] = []
+
+            if message.images or message.videos:
+                if message.images:
+                    yield _sse(
+                        event="vision.start",
+                        data={"count": len(message.images)},
+                    )
+                if message.videos:
+                    yield _sse(
+                        event="video.start",
+                        data={"count": len(message.videos)},
+                    )
+
+                # 图片描述 + 视频帧描述并行；都受 VisionService 全局 Semaphore 节流
+                image_descs, video_descs = await asyncio.gather(
+                    vision_service.describe_images(message.images or []),
+                    video_service.describe_videos(message.videos or []),
                 )
-                descriptions = await vision_service.describe_images(message.images)
-                user_content = _merge_image_descriptions(
-                    message.content, message.images, descriptions
+                user_content = _merge_media_descriptions(
+                    message.content,
+                    list(message.images or []),
+                    image_descs,
+                    list(message.videos or []),
+                    video_descs,
                 )
-                yield _sse(
-                    event="vision.done",
-                    data={"count": len(message.images)},
-                )
+
+                if message.images:
+                    yield _sse(
+                        event="vision.done",
+                        data={"count": len(message.images)},
+                    )
+                if message.videos:
+                    yield _sse(
+                        event="video.done",
+                        data={"count": len(message.videos)},
+                    )
 
             # 追加本轮用户消息；用 + 拼新 list 以触发 SQLAlchemy dirty 检测
             user_msg: dict[str, Any] = {
@@ -99,6 +127,8 @@ class ChatService:
             if message.images:
                 # 原始图片元数据单独存，便于前端回放原图
                 user_msg["images"] = [img.model_dump() for img in message.images]
+            if message.videos:
+                user_msg["videos"] = [v.model_dump() for v in message.videos]
             messages = exist_conversation.messages + [user_msg]
             logger.info(f"history_len after user msg appended: {len(messages)}")
 
@@ -265,7 +295,7 @@ def _build_rag_history(
     return clean[-2 * max_turns:]
 
 
-_NON_LLM_FIELDS = {"created", "images"}
+_NON_LLM_FIELDS = {"created", "images", "videos"}
 
 
 def _strip_message(msg: dict[str, Any]) -> dict[str, Any]:
@@ -278,10 +308,14 @@ def _strip_message(msg: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in msg.items() if k not in _NON_LLM_FIELDS}
 
 
-def _merge_image_descriptions(
-    text: str, images: list[ImageInput], descriptions: list[str]
+def _merge_media_descriptions(
+    text: str,
+    images: list[ImageInput],
+    image_descs: list[str],
+    videos: list[VideoInput],
+    video_descs: list[VideoDescription],
 ) -> str:
-    """把 vision 转出来的图片描述拼到用户原文后面。
+    """把 vision 转出来的图/视频描述拼到用户原文后面。
 
     格式：
         <原文>
@@ -290,16 +324,39 @@ def _merge_image_descriptions(
         图1 (gill.jpg)：xxx
         图2：xxx
 
-    描述列表与 images 一一对应；描述若为 "[图片识别失败：...]" 也会照样拼进去，
-    让 DeepSeek 感知到"有图但识别失败"，必要时引导用户文字补充。
+        [用户附视频]
+        视频1 (swim.mp4, 时长 12.0s)：
+          帧1 (2.0s)：xxx
+          帧2 (6.0s)：xxx
+          帧3 (10.0s)：xxx
+
+    描述若为 "[图片识别失败：...]" / "[视频识别失败：...]" 也照样拼进去，
+    让 DeepSeek 感知到"识别失败"并引导用户文字补充。
     """
-    if not images:
+    if not images and not videos:
         return text
-    lines = ["[用户附图]"]
-    for i, (img, desc) in enumerate(zip(images, descriptions), start=1):
-        name_tag = f" ({img.original_filename})" if img.original_filename else ""
-        lines.append(f"图{i}{name_tag}：{desc}")
-    return f"{text}\n\n" + "\n".join(lines)
+
+    parts: list[str] = [text]
+
+    if images:
+        parts.append("")
+        parts.append("[用户附图]")
+        for i, (img, desc) in enumerate(zip(images, image_descs), start=1):
+            name_tag = f" ({img.original_filename})" if img.original_filename else ""
+            parts.append(f"图{i}{name_tag}：{desc}")
+
+    if videos:
+        parts.append("")
+        parts.append("[用户附视频]")
+        for i, (vid, vd) in enumerate(zip(videos, video_descs), start=1):
+            head = f"{vid.original_filename}, " if vid.original_filename else ""
+            parts.append(
+                f"视频{i} ({head}时长 {vid.duration_seconds:.1f}s)："
+            )
+            for frame in vd.frames:
+                parts.append(f"  帧 ({frame.ts_sec:.1f}s)：{frame.text}")
+
+    return "\n".join(parts)
 
 
 def _accumulate_tool_call(buf: dict[int, dict[str, Any]], tc_delta: Any) -> None:

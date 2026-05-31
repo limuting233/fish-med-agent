@@ -103,6 +103,16 @@ class ImageNotFoundError(BizException):
     message = "图片不存在"
 
 
+class VideoNotFoundError(BizException):
+    """
+    要删除的视频不存在。
+    """
+
+    status_code = HTTPStatus.NOT_FOUND
+    code = 404003
+    message = "视频不存在"
+
+
 class DeleteFailedError(BizException):
     """
     对象存储删除失败。
@@ -121,3 +131,43 @@ class UploadFailedError(BizException):
     status_code = HTTPStatus.INTERNAL_SERVER_ERROR
     code = 500001
     message = "文件上传失败"
+
+
+class UnsupportedVideoFormatError(BizException):
+    """
+    上传视频格式不支持。仅允许 mp4 / webm / mov。
+    """
+
+    status_code = HTTPStatus.BAD_REQUEST
+    code = 400002
+    message = "不支持的视频格式，仅支持 mp4/webm/mov"
+
+
+class VideoCorruptedError(BizException):
+    """
+    视频文件损坏或 ffmpeg 无法解析（取不到流信息）。
+    """
+
+    status_code = HTTPStatus.BAD_REQUEST
+    code = 400003
+    message = "视频文件损坏或无法解析"
+
+
+class VideoTooLargeError(BizException):
+    """
+    上传视频超过大小限制（50MB）。
+    """
+
+    status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    code = 413002
+    message = "视频大小超过限制（最大 50MB）"
+
+
+class VideoTooLongError(BizException):
+    """
+    上传视频超过时长限制（30s）。
+    """
+
+    status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    code = 413003
+    message = "视频时长超过限制（最大 30 秒）"

@@ -11,11 +11,23 @@ export type ChatStreamImageInput = {
     url_expires_at?: number
 }
 
+export type ChatStreamVideoInput = {
+    object_key: string
+    content_type: string
+    extension: string
+    size: number
+    duration_seconds: number
+    original_filename?: string | null
+    url?: string
+    url_expires_at?: number
+}
+
 export type ChatStreamRequest = {
     conversation_id: number
     message: {
         content: string
         images?: ChatStreamImageInput[] | null
+        videos?: ChatStreamVideoInput[] | null
     }
 }
 
