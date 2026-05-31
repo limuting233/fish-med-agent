@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Clock, FileImage, LoaderCircle, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, X } from 'lucide-vue-next'
+import { Check, Clock, Copy, FileImage, Images, LoaderCircle, LogOut, Mic, MoreHorizontal, PanelLeft, Plus, Search, SendHorizontal, Sparkles, Video, X } from 'lucide-vue-next'
 import MarkdownIt from 'markdown-it'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -106,6 +106,8 @@ const PRESIGN_BATCH_SIZE = 50
 const PRESIGN_REFRESH_WINDOW_MS = 60 * 1000
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif'])
+const SUPPORTED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime'])
+const SUPPORTED_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
 const HOME_SELECTED_CONVERSATION_SESSION_KEY = 'fish-med-agent:selected-conversation-id'
 const HOME_SIDEBAR_COLLAPSED_SESSION_KEY = 'fish-med-agent:sidebar-collapsed'
 
@@ -143,7 +145,9 @@ const selectedConversationId = ref<number>(getSessionNumber(HOME_SELECTED_CONVER
 const draftMessage = ref('')
 const messageInputComposing = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const messageInput = ref<HTMLTextAreaElement | null>(null)
 const messagePane = ref<HTMLElement | null>(null)
+const attachmentControl = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<Attachment[]>([])
 const activeImageUploadCount = ref(0)
 const activeImageDeleteCount = ref(0)
@@ -153,13 +157,16 @@ let uploadQueueRunning = false
 const searchOpen = ref(false)
 const logoutDialogOpen = ref(false)
 const imagePreview = ref<ImagePreviewState | null>(null)
+const attachmentMenuOpen = ref(false)
 const searchQuery = ref('')
 const searchDialogInput = ref<HTMLInputElement | null>(null)
 const conversationListLoading = ref(false)
 const conversationListError = ref('')
 const responseGenerating = ref(false)
 const activeVisionStatus = ref<VisionStatus | null>(null)
+const copiedMessageKey = ref('')
 const toolCallPanels = ref<ToolCallPanel[]>([])
+let copiedMessageTimer: number | null = null
 let activeStream: {
     session: StreamSession
     conversationId: number
@@ -283,6 +290,11 @@ function isSupportedImageFile(file: File) {
     return SUPPORTED_IMAGE_MIME_TYPES.has(file.type) || SUPPORTED_IMAGE_EXTENSIONS.has(extension)
 }
 
+function isSupportedVideoFile(file: File) {
+    const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+    return SUPPORTED_VIDEO_MIME_TYPES.has(file.type) || SUPPORTED_VIDEO_EXTENSIONS.has(extension)
+}
+
 function hasFreshImageUrl(image: MessageImage) {
     return Boolean(image.url && typeof image.url_expires_at === 'number' && Date.now() + PRESIGN_REFRESH_WINDOW_MS < image.url_expires_at)
 }
@@ -317,7 +329,25 @@ function closeImagePreview() {
 function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && imagePreview.value) {
         closeImagePreview()
+        return
     }
+
+    if (event.key === 'Escape' && attachmentMenuOpen.value) {
+        closeAttachmentMenu()
+    }
+}
+
+function handleWindowPointerDown(event: PointerEvent) {
+    if (!attachmentMenuOpen.value) {
+        return
+    }
+
+    const target = event.target instanceof Node ? event.target : null
+    if (target && attachmentControl.value?.contains(target)) {
+        return
+    }
+
+    closeAttachmentMenu()
 }
 
 function markMessageImageFailed(imageId: string) {
@@ -453,6 +483,62 @@ function getMessageContent(message?: ConversationMessage) {
 
 function getUserDisplayContent(content: string) {
     return content.replace(/\n*\[用户附图\][\s\S]*$/u, '').trim()
+}
+
+function getMessageCopyText(message: DisplayConversationMessage) {
+    return message.role === 'user' ? getUserDisplayContent(message.content) : message.content.trim()
+}
+
+function getMessageKey(message: DisplayConversationMessage, index: number) {
+    return `${message.created}-${index}`
+}
+
+function isMessageCopied(message: DisplayConversationMessage, index: number) {
+    return copiedMessageKey.value === getMessageKey(message, index)
+}
+
+function markMessageCopied(message: DisplayConversationMessage, index: number) {
+    copiedMessageKey.value = getMessageKey(message, index)
+
+    if (copiedMessageTimer) {
+        window.clearTimeout(copiedMessageTimer)
+    }
+
+    copiedMessageTimer = window.setTimeout(() => {
+        if (copiedMessageKey.value === getMessageKey(message, index)) {
+            copiedMessageKey.value = ''
+        }
+        copiedMessageTimer = null
+    }, 1400)
+}
+
+async function copyMessage(message: DisplayConversationMessage, index: number, event?: MouseEvent) {
+    const text = getMessageCopyText(message)
+
+    if (!text) {
+        return
+    }
+
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text)
+        } else {
+            const textarea = document.createElement('textarea')
+            textarea.value = text
+            textarea.setAttribute('readonly', '')
+            textarea.style.position = 'fixed'
+            textarea.style.opacity = '0'
+            document.body.appendChild(textarea)
+            textarea.select()
+            document.execCommand('copy')
+            document.body.removeChild(textarea)
+        }
+
+        markMessageCopied(message, index)
+        ;(event?.currentTarget as HTMLElement | null)?.blur()
+    } catch {
+        toast.error('复制失败')
+    }
 }
 
 function renderAssistantMarkdown(content: string) {
@@ -869,6 +955,17 @@ function handleMessageInputCompositionEnd() {
     messageInputComposing.value = false
 }
 
+function resizeMessageInput() {
+    const textarea = messageInput.value
+    if (!textarea) {
+        return
+    }
+
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`
+    textarea.style.overflowY = textarea.scrollHeight > 220 ? 'auto' : 'hidden'
+}
+
 function handleMessageInputKeydown(event: KeyboardEvent) {
     if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
         return
@@ -882,18 +979,42 @@ function handleMessageInputKeydown(event: KeyboardEvent) {
     sendMessage()
 }
 
-function openFilePicker() {
+function toggleAttachmentMenu() {
+    if (imagesBusy.value || responseGenerating.value) {
+        return
+    }
+
+    attachmentMenuOpen.value = !attachmentMenuOpen.value
+}
+
+function closeAttachmentMenu() {
+    attachmentMenuOpen.value = false
+}
+
+function openFilePicker(acceptMode: 'image' | 'video' = 'image') {
+    closeAttachmentMenu()
+    if (fileInput.value) {
+        fileInput.value.accept =
+            acceptMode === 'image'
+                ? 'image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif'
+                : 'video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov'
+    }
     fileInput.value?.click()
 }
 
 function handleFileChange(event: Event) {
     const input = event.target as HTMLInputElement
     const selectedFiles = Array.from(input.files ?? [])
+    const videoFiles = selectedFiles.filter(isSupportedVideoFile)
     const imageFiles = selectedFiles.filter((file) => isSupportedImageFile(file) && file.size <= MAX_IMAGE_SIZE_BYTES)
     const availableSlots = Math.max(0, MAX_IMAGE_ATTACHMENTS - pendingAttachments.value.length)
 
-    if (selectedFiles.some((file) => !isSupportedImageFile(file))) {
-        toast.warning('仅支持 jpg/png/webp/gif 图片')
+    if (videoFiles.length) {
+        toast.warning('已识别到视频文件，但当前后端尚未提供视频上传接口')
+    }
+
+    if (selectedFiles.some((file) => !isSupportedImageFile(file) && !isSupportedVideoFile(file))) {
+        toast.warning('仅支持 jpg/png/webp/gif 图片和 mp4/webm/mov 视频')
     }
 
     if (selectedFiles.some((file) => isSupportedImageFile(file) && file.size > MAX_IMAGE_SIZE_BYTES)) {
@@ -1218,6 +1339,7 @@ async function sendMessage() {
         return
     }
 
+    closeAttachmentMenu()
     const content = draftMessage.value.trim()
     const attachmentsToSend = pendingAttachments.value.filter((attachment) => attachment.status === 'uploaded' && attachment.uploadedImage)
     const uploadedImages = attachmentsToSend.map((attachment) => attachment.uploadedImage as UploadedImage)
@@ -1263,6 +1385,7 @@ async function sendMessage() {
     }))
 
     draftMessage.value = ''
+    void nextTick(resizeMessageInput)
     clearPendingAttachments({ revokePreviews: false })
     scrollToBottom()
 
@@ -1435,14 +1558,23 @@ watch(
     { flush: 'post' },
 )
 
+watch(draftMessage, () => {
+    void nextTick(resizeMessageInput)
+})
+
 onMounted(() => {
     window.addEventListener('keydown', handleWindowKeydown)
+    window.addEventListener('pointerdown', handleWindowPointerDown)
     void loadCurrentUser()
     void loadConversationList()
 })
 
 onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleWindowKeydown)
+    window.removeEventListener('pointerdown', handleWindowPointerDown)
+    if (copiedMessageTimer) {
+        window.clearTimeout(copiedMessageTimer)
+    }
     abortActiveStream()
     clearPendingAttachments()
     revokeConversationPreviewUrls()
@@ -1670,6 +1802,19 @@ onBeforeUnmount(() => {
                                     <p v-if="getUserDisplayContent(message.content)">{{ getUserDisplayContent(message.content) }}</p>
                                 </template>
                             </div>
+
+                            <div class="message-actions" aria-label="消息操作">
+                                <button
+                                    class="copy-message-button"
+                                    type="button"
+                                    :disabled="!getMessageCopyText(message)"
+                                    aria-label="复制消息"
+                                    title="复制"
+                                    @click="copyMessage(message, messageIndex, $event)">
+                                    <Check v-if="isMessageCopied(message, messageIndex)" :size="14" stroke-width="2.2" />
+                                    <Copy v-else :size="14" stroke-width="2" />
+                                </button>
+                            </div>
                         </div>
                     </article>
                 </div>
@@ -1708,16 +1853,31 @@ onBeforeUnmount(() => {
                             <Mic :size="19" stroke-width="2" />
                         </button>
 
-                        <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="上传图片" @click="openFilePicker">
-                            <FileImage :size="19" stroke-width="2" />
-                        </button>
+                        <div ref="attachmentControl" class="attachment-control">
+                            <button class="composer-icon-button" type="button" :disabled="imagesBusy || responseGenerating" aria-label="添加附件" @click="toggleAttachmentMenu">
+                                <Plus :size="22" stroke-width="2" />
+                            </button>
+
+                            <div v-if="attachmentMenuOpen" class="attachment-menu" role="menu" aria-label="附件菜单">
+                                <button class="attachment-menu__item" type="button" role="menuitem" @click="openFilePicker('image')">
+                                    <Images :size="18" stroke-width="2" />
+                                    <span>添加图片</span>
+                                </button>
+                                <button class="attachment-menu__item" type="button" role="menuitem" @click="openFilePicker('video')">
+                                    <Video :size="18" stroke-width="2" />
+                                    <span>添加视频</span>
+                                </button>
+                            </div>
+                        </div>
 
                         <textarea
+                            ref="messageInput"
                             v-model="draftMessage"
                             rows="1"
                             placeholder="输入鱼种、症状、水温、发病时长..."
                             @compositionstart="handleMessageInputCompositionStart"
                             @compositionend="handleMessageInputCompositionEnd"
+                            @input="resizeMessageInput"
                             @keydown="handleMessageInputKeydown"></textarea>
 
                         <button class="send-button" type="submit" :disabled="!canSend" aria-label="发送">
@@ -1729,7 +1889,7 @@ onBeforeUnmount(() => {
                             ref="fileInput"
                             class="file-input"
                             type="file"
-                            accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime,.jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov"
                             multiple
                             :disabled="imagesBusy || responseGenerating"
                             @change="handleFileChange" />
@@ -2834,6 +2994,59 @@ textarea:focus-visible {
     margin: 0;
 }
 
+.message-actions {
+    display: flex;
+    width: 100%;
+}
+
+.chat-message--user .message-actions {
+    justify-content: flex-end;
+}
+
+.chat-message--assistant .message-actions {
+    justify-content: flex-start;
+}
+
+.copy-message-button {
+    display: inline-flex;
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: calc(var(--radius) - 5px);
+    background: transparent;
+    color: var(--muted-foreground);
+    opacity: 0;
+    pointer-events: none;
+    padding: 0;
+    line-height: 1;
+    transform: translateY(-2px);
+    transition:
+        background-color 160ms ease,
+        color 160ms ease,
+        opacity 160ms ease,
+        transform 160ms ease;
+}
+
+.chat-message:hover .copy-message-button {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.copy-message-button:hover,
+.copy-message-button:focus-visible {
+    background: rgba(14, 127, 176, 0.1);
+    color: var(--ocean-blue);
+}
+
+.copy-message-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.38;
+}
+
 .message-markdown {
     display: grid;
     gap: 10px;
@@ -3358,8 +3571,9 @@ textarea:focus-visible {
 .composer textarea {
     grid-column: 1 / -1;
     grid-row: 1;
+    height: 52px;
     min-height: 52px;
-    max-height: 140px;
+    max-height: 220px;
     resize: none;
     border: 0;
     background: transparent;
@@ -3367,6 +3581,7 @@ textarea:focus-visible {
     font-size: 15px;
     line-height: 1.5;
     outline: none;
+    overflow-y: hidden;
     padding: 8px 6px;
 }
 
@@ -3383,6 +3598,70 @@ textarea:focus-visible {
 
 .composer-icon-button:first-of-type {
     grid-column: 1;
+}
+
+.attachment-control {
+    position: relative;
+    grid-column: 2;
+    grid-row: 2;
+    width: 38px;
+    height: 38px;
+}
+
+.attachment-control .composer-icon-button {
+    width: 38px;
+    height: 38px;
+}
+
+.attachment-menu {
+    position: absolute;
+    left: -34px;
+    bottom: calc(100% + 10px);
+    z-index: 6;
+    display: grid;
+    width: min(190px, calc(100vw - 32px));
+    gap: 2px;
+    border: 1px solid rgba(228, 228, 231, 0.86);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.18);
+    padding: 9px;
+    backdrop-filter: blur(18px);
+}
+
+.attachment-menu__item {
+    display: grid;
+    min-height: 38px;
+    grid-template-columns: 24px minmax(0, 1fr) 16px;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--foreground);
+    padding: 0 8px;
+    text-align: left;
+    transition:
+        background-color 160ms ease,
+        color 160ms ease;
+}
+
+.attachment-menu__item:hover,
+.attachment-menu__item:focus-visible {
+    background: rgba(14, 127, 176, 0.1);
+    color: var(--ocean-blue);
+}
+
+.attachment-menu__item span {
+    overflow: hidden;
+    font-size: 14px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-menu__chevron {
+    justify-self: end;
 }
 
 .composer-icon-button:nth-of-type(2) {
@@ -3614,7 +3893,9 @@ textarea:focus-visible {
     }
 
     .composer textarea {
+        height: 48px;
         min-height: 48px;
+        max-height: 176px;
         font-size: 14px;
         padding: 7px 4px;
     }
