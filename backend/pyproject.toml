@@ -12,6 +12,7 @@ dependencies = [
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
     "fastapi>=0.135.3",
+    "ffmpeg-python>=0.2.0",
     "greenlet>=3.4.0",
     "loguru>=0.7.3",
     "openai>=2.32.0",
